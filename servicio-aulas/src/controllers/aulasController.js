@@ -273,6 +273,41 @@ exports.validarAccesoQR = async (req, res) => {
 
         const aula = aulaRes.rows[0];
 
+        // ── 1.5 LLAVE MAESTRA (Administradores) ───────────────────────────────────────
+        if (req.usuario && req.usuario.rol_id === 1) {
+            // Alternamos el estado: si está ocupada la liberamos, de lo contrario la ocupamos
+            const nuevoEstado = aula.estado === 'ocupada' ? 'disponible' : 'ocupada';
+            const comando = aula.estado === 'ocupada' ? 'CLOSE_DOOR' : 'OPEN_DOOR';
+
+            await client.query(`UPDATE aulas SET estado = $1 WHERE id = $2`, [nuevoEstado, aulaId]);
+            
+            if (nuevoEstado === 'disponible') {
+                await client.query(
+                    `UPDATE sesiones_aula SET activa = false WHERE aula_id = $1 AND activa = true`, 
+                    [aulaId]
+                );
+            }
+            
+            await client.query('COMMIT');
+
+            await _registrarAcceso(pool, {
+                aulaId, 
+                usuarioId,
+                accion: comando === 'OPEN_DOOR' ? 'entrada' : 'salida',
+                motivo: 'llave_maestra_admin',
+                aulaEstado: nuevoEstado,
+            });
+
+            return res.json({
+                acceso: comando === 'OPEN_DOOR' ? 'entrada' : 'salida',
+                comando: comando,
+                delayMs: comando === 'CLOSE_DOOR' ? 60_000 : 0,
+                aula: aula.nombre,
+                mensaje: `Llave maestra utilizada. Aula forzada a estado: ${nuevoEstado}.`,
+            });
+        }
+        // ─────────────────────────────────────────────────────────────────────────────
+
         // Mantenimiento: bloqueo total, ni admin docente pasa por esta ruta
         if (aula.estado === 'mantenimiento') {
             await client.query('ROLLBACK');
@@ -406,15 +441,15 @@ exports.validarAccesoQR = async (req, res) => {
                 -- ¿Estamos ANTES de hora_inicio? (llegó muy temprano)
                 ($1::time < $2::time) AS muy_temprano,
 
-                -- ¿Estamos dentro de los primeros 5 minutos? (entrada OK)
-                ($1::time BETWEEN $2::time AND ($2::time + interval '5 minutes')) AS en_ventana_entrada,
+                -- ¿Estamos dentro de los primeros 10 minutos? (entrada OK)
+                ($1::time BETWEEN $2::time AND ($2::time + interval '10 minutes')) AS en_ventana_entrada,
 
-                -- ¿Entre 5 y 10 minutos? (tarde — denegado, registra anomalía)
-                ($1::time BETWEEN ($2::time + interval '5 minutes')
-                               AND ($2::time + interval '10 minutes')) AS llegada_tarde,
+                -- ¿Entre 10 y 15 minutos? (tarde — denegado, registra anomalía)
+                ($1::time BETWEEN ($2::time + interval '10 minutes')
+                               AND ($2::time + interval '15 minutes')) AS llegada_tarde,
 
-                -- ¿Pasaron más de 10 minutos? (fuera de ventana completamente)
-                ($1::time > ($2::time + interval '10 minutes')) AS fuera_de_ventana,
+                -- ¿Pasaron más de 15 minutos? (fuera de ventana completamente)
+                ($1::time > ($2::time + interval '15 minutes')) AS fuera_de_ventana,
 
                 -- ¿Pasó la hora de fin? (llegó después de que terminó su clase)
                 ($1::time > $3::time) AS clase_terminada
@@ -444,18 +479,18 @@ exports.validarAccesoQR = async (req, res) => {
             await _registrarAcceso(pool, {
                 aulaId, usuarioId,
                 accion:  'denegado',
-                motivo:  'llegada_tarde',       // visible en panel web como anomalía
+                motivo:  'llegada_tarde',      
                 aulaEstado: aula.estado,
                 sesionId: sesion.id,
             });
             return res.status(403).json({
                 acceso:   'denegado',
-                motivo:   'Acceso denegado: llegada fuera del rango permitido (máx. 5 min)',
-                anomalia: true,   // el frontend puede mostrar un ícono de advertencia
+                motivo:   'Acceso denegado: llegada fuera del rango permitido (máx. 10 min)',
+                anomalia: true, 
             });
         }
 
-        // Caso: pasó más de 10 min O la clase ya terminó
+        // Caso: pasó más de 15 min O la clase ya terminó
         if (v.fuera_de_ventana || v.clase_terminada) {
             await client.query('ROLLBACK');
             await _registrarAcceso(pool, {
@@ -510,11 +545,107 @@ exports.validarAccesoQR = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── HISTORIAL DE ACCESOS ─────────────────────────────────────────────────────
+exports.obtenerHistorial = async (req, res) => {
+    try {
+        // Traemos los últimos 50 registros, cruzando datos con la tabla aulas
+        const result = await pool.query(`
+            SELECT ra.id, ra.timestamp, a.nombre AS aula, ra.usuario_id,
+                   ra.accion, ra.motivo, ra.estado_aula_snapshot
+            FROM registro_accesos ra
+            JOIN aulas a ON a.id = ra.aula_id
+            ORDER BY ra.timestamp DESC
+            LIMIT 50
+        `);
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// ─── Cierre Automático ──────────────────────────────────
+exports.cierreAutomatico = async () => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // 1. Buscamos y apagamos las sesiones que ya terminaron (hora_fin < hora actual)
+        const result = await client.query(`
+            UPDATE sesiones_aula
+            SET activa = false
+            WHERE activa = true AND hora_fin < CURRENT_TIME
+            RETURNING id, aula_id, profesor_id
+        `);
+
+        if (result.rows.length > 0) {
+            // 2. Extraemos los IDs de las aulas que se quedaron "abiertas"
+            const aulasIds = result.rows.map(row => row.aula_id);
+            
+            // 3. Regresamos esas aulas a estado 'disponible'
+            await client.query(`
+                UPDATE aulas 
+                SET estado = 'disponible' 
+                WHERE id = ANY($1::int[])
+            `, [aulasIds]);
+
+            // 4. DSe guarda en el historial
+            for (const row of result.rows) {
+                await _registrarAcceso(pool, {
+                    aulaId: row.aula_id,
+                    usuarioId: row.profesor_id,
+                    sesionId: row.id,
+                    accion: 'salida',
+                    motivo: 'cierre_automatico_sistema',
+                    aulaEstado: 'disponible'
+                });
+            }
+            console.log(`🧹 Barrendero ejecutado: Se liberaron automáticamente ${result.rows.length} aulas.`);
+        }
+        
+        await client.query('COMMIT');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('❌ Error en el barrendero automático:', error.message);
+    } finally {
+        client.release();
+    }
+};
+
+exports.listarAnomalias = async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM v_anomalias ORDER BY timestamp DESC LIMIT 10`
+        );
+        let anomalias = result.rows;
+
+        // ── MICROSERVICIOS: Obtenemos los nombres del puerto 3001 ──
+        try {
+            const response = await fetch('http://localhost:3001/usuarios', {
+                headers: { 'Authorization': req.headers['authorization'] }
+            });
+            
+            if (response.ok) {
+                const usuarios = await response.json();
+                anomalias = anomalias.map(a => {
+                    const user = usuarios.find(u => String(u.id) === String(a.usuario_id));
+                    return {
+                        ...a,
+                        usuario_nombre: user ? user.nombre : `Usuario ID: ${a.usuario_id}`
+                    };
+                });
+            }
+        } catch (err) {
+            console.warn('⚠️ No se pudo conectar al ms-usuarios para traer nombres.');
+        }
+
+        res.json(anomalias);
+    } catch (error) {
+        console.error('❌ listarAnomalias error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 // HELPER PRIVADO — registra cada intento en registro_accesos (fire-and-forget)
-// No lanza excepciones para no interrumpir el flujo principal.
-// Usa `pool` directo (sin transacción) porque este log es post-commit.
-// ─────────────────────────────────────────────────────────────────────────────
 async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaEstado, sesionId = null }) {
     try {
         await pool.query(

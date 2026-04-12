@@ -9,6 +9,8 @@ const { verificarToken, soloAdmin } = require('../middleware/authMiddleware');
 
 // ── Aulas ─────────────────────────────────────────────────────────────────────
 router.get('/',                      verificarToken, aulasCtrl.listarAulas);
+router.get('/historial',             verificarToken, soloAdmin, aulasCtrl.obtenerHistorial);
+router.get('/anomalias',             verificarToken, aulasCtrl.listarAnomalias);
 router.get('/:id',                   verificarToken, aulasCtrl.obtenerAula);
 router.post('/',                     verificarToken, soloAdmin, aulasCtrl.crearAula);
 router.put('/:id',                   verificarToken, soloAdmin, aulasCtrl.actualizarAula);
@@ -16,6 +18,6 @@ router.patch('/:id/status',          verificarToken, aulasCtrl.actualizarEstado)
 router.post('/:id/qr',               verificarToken, aulasCtrl.generarQR);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
-router.post('/:id/validar-acceso',   verificarToken, aulasCtrl.validarAccesoQR); // AQUÍ QUEDÓ LA NUEVA
+router.post('/:id/validar-acceso',   verificarToken, aulasCtrl.validarAccesoQR); 
 
 module.exports = router;
