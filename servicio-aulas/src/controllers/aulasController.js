@@ -1,3 +1,4 @@
+// src/controllers/aulasController.js
 const pool = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 
@@ -229,3 +230,301 @@ exports.activarSesion = async (req, res) => {
         client.release();
     }
 };
+
+/**
+ * POST /aulas/:id/validar-acceso
+ * Body: { usuario_id: number }
+ *
+ * Máquina de estados:
+ *
+ *   disponible  + profesor con clase ahora  → ocupada    → OPEN_DOOR  ✅
+ *   ocupada     + profesor dueño de sesión  → disponible → CLOSE_DOOR (delay 60s) ✅
+ *   cualquier   + sin clase / tarde         → sin cambio             ❌ 403
+ *   mantenimiento                           → sin cambio             ❌ 403
+ *
+ * Tolerancia de entrada: desde hora_inicio hasta hora_inicio + 5 min.
+ * Tolerancia de salida:  cualquier momento entre hora_inicio y hora_fin.
+ * Llegada tarde (> 10 min después de hora_inicio): DENEGADO, registra anomalía.
+ */
+exports.validarAccesoQR = async (req, res) => {
+    const aulaId    = parseInt(req.params.id, 10);
+    const usuarioId = parseInt(req.body?.usuario_id, 10);
+
+    if (!usuarioId || isNaN(usuarioId)) {
+        return res.status(400).json({ error: 'usuario_id requerido en el body' });
+    }
+
+    let client;
+
+    try {
+        const client = await pool.connect();    
+        await client.query('BEGIN');
+
+        // ── 1. Leer estado actual del aula (FOR UPDATE para evitar race conditions) ──
+        const aulaRes = await client.query(
+            `SELECT id, nombre, estado FROM aulas WHERE id = $1 FOR UPDATE`,
+            [aulaId]
+        );
+
+        if (aulaRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Aula no encontrada' });
+        }
+
+        const aula = aulaRes.rows[0];
+
+        // Mantenimiento: bloqueo total, ni admin docente pasa por esta ruta
+        if (aula.estado === 'mantenimiento') {
+            await client.query('ROLLBACK');
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion: 'denegado',
+                motivo: 'aula_en_mantenimiento',
+                aulaEstado: aula.estado,
+            });
+            return res.status(403).json({
+                acceso: 'denegado',
+                motivo: 'El aula está en mantenimiento',
+            });
+        }
+
+        // ── 2. Hora actual en zona local del servidor (TIME en PG es naive) ──────────
+        //    Comparamos con los TIME de la BD usando CURRENT_TIME de PostgreSQL
+        //    para evitar desfases JS ↔ PG cuando el servidor corre en UTC.
+        const tiempoRes = await client.query(`SELECT CURRENT_TIME AS ahora`);
+        // ahora es un string 'HH:MM:SS.ffffff+TZ' — extraemos solo HH:MM:SS
+        const ahora = tiempoRes.rows[0].ahora; // pg lo devuelve como string
+
+        // ── 3. Buscar sesión programada para este profesor en esta aula ───────────────
+        //    Condiciones:
+        //      - sesión activa = true  (fue activada desde el panel web por admin)
+        //      - profesor_id coincide
+        //      - aula_id coincide
+        const sesionRes = await client.query(
+            `SELECT id, hora_inicio, hora_fin, materia_nombre, grupo_nombre, profesor_nombre
+             FROM sesiones_aula
+             WHERE aula_id     = $1
+               AND profesor_id = $2
+               AND activa      = true`,
+            [aulaId, usuarioId]
+        );
+
+        // ── 4. RAMA: aula OCUPADA ─────────────────────────────────────────────────────
+        if (aula.estado === 'ocupada') {
+
+            if (sesionRes.rows.length === 0) {
+                // Hay otra sesión activa de otro profesor → acceso denegado
+                await client.query('ROLLBACK');
+                await _registrarAcceso(pool, {
+                    aulaId, usuarioId,
+                    accion: 'denegado',
+                    motivo: 'aula_ocupada_otro_profesor',
+                    aulaEstado: aula.estado,
+                });
+                return res.status(403).json({
+                    acceso: 'denegado',
+                    motivo: 'El aula está ocupada por otra clase',
+                });
+            }
+
+            // Es el mismo profesor → está saliendo
+            const sesion = sesionRes.rows[0];
+
+            // Verificar que aún no terminó su horario (no debería pasar, pero validamos)
+            const dentroDeHorario = await client.query(
+                `SELECT ($1::time BETWEEN $2::time AND $3::time) AS valido`,
+                [ahora, sesion.hora_inicio, sesion.hora_fin]
+            );
+
+            // Aunque esté fuera del horario, si él es el dueño, lo dejamos salir
+            // (podría salir tarde — eso es legítimo)
+
+            // Liberar aula
+            await client.query(
+                `UPDATE aulas SET estado = 'disponible' WHERE id = $1`,
+                [aulaId]
+            );
+
+            // Desactivar sesión
+            await client.query(
+                `UPDATE sesiones_aula SET activa = false WHERE id = $1`,
+                [sesion.id]
+            );
+
+            await client.query('COMMIT');
+
+            // Registrar salida
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion: 'salida',
+                motivo: 'fin_clase_voluntario',
+                aulaEstado: 'disponible',
+                sesionId: sesion.id,
+            });
+
+            // Instrucción al servicio IoT: CLOSE_DOOR con 60 s de delay
+            return res.json({
+                acceso:    'salida',
+                comando:   'CLOSE_DOOR',
+                delayMs:   60_000,   // el servicio IoT mantiene abierta 60s antes de cerrar
+                aula:      aula.nombre,
+                profesor:  sesion.profesor_nombre,
+                materia:   sesion.materia_nombre,
+                grupo:     sesion.grupo_nombre,
+                mensaje:   'Clase finalizada. La puerta cerrará en 60 segundos.',
+            });
+        }
+
+        // ── 5. RAMA: aula DISPONIBLE ──────────────────────────────────────────────────
+        if (sesionRes.rows.length === 0) {
+            // No tiene clase programada en este aula ahora
+            await client.query('ROLLBACK');
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion: 'denegado',
+                motivo: 'sin_sesion_programada',
+                aulaEstado: aula.estado,
+            });
+            return res.status(403).json({
+                acceso: 'denegado',
+                motivo: 'No tienes clase programada en este aula',
+            });
+        }
+
+        const sesion = sesionRes.rows[0];
+
+        // ── 6. Validar ventana de tiempo de entrada ───────────────────────────────────
+        //
+        //    hora_inicio              +5 min          +10 min       hora_fin
+        //        |─────── ENTRADA OK ──────|─── TARDE / DENEGADO ───|── fuera ──|
+        //
+        //    Usamos aritmética de intervalos directamente en PG para evitar
+        //    conversiones de zona horaria en JS.
+
+        const ventanaRes = await client.query(`
+            SELECT
+                -- ¿Estamos ANTES de hora_inicio? (llegó muy temprano)
+                ($1::time < $2::time) AS muy_temprano,
+
+                -- ¿Estamos dentro de los primeros 5 minutos? (entrada OK)
+                ($1::time BETWEEN $2::time AND ($2::time + interval '5 minutes')) AS en_ventana_entrada,
+
+                -- ¿Entre 5 y 10 minutos? (tarde — denegado, registra anomalía)
+                ($1::time BETWEEN ($2::time + interval '5 minutes')
+                               AND ($2::time + interval '10 minutes')) AS llegada_tarde,
+
+                -- ¿Pasaron más de 10 minutos? (fuera de ventana completamente)
+                ($1::time > ($2::time + interval '10 minutes')) AS fuera_de_ventana,
+
+                -- ¿Pasó la hora de fin? (llegó después de que terminó su clase)
+                ($1::time > $3::time) AS clase_terminada
+        `, [ahora, sesion.hora_inicio, sesion.hora_fin]);
+
+        const v = ventanaRes.rows[0];
+
+        // Caso: llegó antes de hora_inicio
+        if (v.muy_temprano) {
+            await client.query('ROLLBACK');
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion: 'denegado',
+                motivo: 'llegada_anticipada',
+                aulaEstado: aula.estado,
+                sesionId: sesion.id,
+            });
+            return res.status(403).json({
+                acceso:  'denegado',
+                motivo:  `Aún no es hora. Tu clase inicia a las ${sesion.hora_inicio.substring(0, 5)}`,
+            });
+        }
+
+        // Caso: llegó tarde (entre 5 y 10 min después de hora_inicio) — anomalía
+        if (v.llegada_tarde) {
+            await client.query('ROLLBACK');
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion:  'denegado',
+                motivo:  'llegada_tarde',       // visible en panel web como anomalía
+                aulaEstado: aula.estado,
+                sesionId: sesion.id,
+            });
+            return res.status(403).json({
+                acceso:   'denegado',
+                motivo:   'Acceso denegado: llegada fuera del rango permitido (máx. 5 min)',
+                anomalia: true,   // el frontend puede mostrar un ícono de advertencia
+            });
+        }
+
+        // Caso: pasó más de 10 min O la clase ya terminó
+        if (v.fuera_de_ventana || v.clase_terminada) {
+            await client.query('ROLLBACK');
+            await _registrarAcceso(pool, {
+                aulaId, usuarioId,
+                accion:  'denegado',
+                motivo:  v.clase_terminada ? 'clase_ya_terminada' : 'fuera_de_ventana',
+                aulaEstado: aula.estado,
+                sesionId: sesion.id,
+            });
+            return res.status(403).json({
+                acceso: 'denegado',
+                motivo: v.clase_terminada
+                    ? 'Tu clase ya terminó'
+                    : 'Fuera del horario permitido de entrada',
+            });
+        }
+
+        // ── 7. ENTRADA VÁLIDA ─────────────────────────────────────────────────────────
+        //    en_ventana_entrada === true → abrir aula
+        await client.query(
+            `UPDATE aulas SET estado = 'ocupada' WHERE id = $1`,
+            [aulaId]
+        );
+
+        await client.query('COMMIT');
+
+        await _registrarAcceso(pool, {
+            aulaId, usuarioId,
+            accion:  'entrada',
+            motivo:  'acceso_autorizado',
+            aulaEstado: 'ocupada',
+            sesionId: sesion.id,
+        });
+
+        return res.json({
+            acceso:   'entrada',
+            comando:  'OPEN_DOOR',
+            aula:     aula.nombre,
+            profesor: sesion.profesor_nombre,
+            materia:  sesion.materia_nombre,
+            grupo:    sesion.grupo_nombre,
+            horario:  `${sesion.hora_inicio.substring(0, 5)} – ${sesion.hora_fin.substring(0, 5)}`,
+            mensaje:  'Acceso autorizado. ¡Buen inicio de clase!',
+        });
+
+    } catch (error) {
+        if (client) await client.query('ROLLBACK');
+        console.error('❌ validarAccesoQR error:', error);
+        res.status(500).json({ error: error.message });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER PRIVADO — registra cada intento en registro_accesos (fire-and-forget)
+// No lanza excepciones para no interrumpir el flujo principal.
+// Usa `pool` directo (sin transacción) porque este log es post-commit.
+// ─────────────────────────────────────────────────────────────────────────────
+async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaEstado, sesionId = null }) {
+    try {
+        await pool.query(
+            `INSERT INTO registro_accesos
+                (aula_id, usuario_id, sesion_id, accion, motivo, estado_aula_snapshot)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [aulaId, usuarioId, sesionId, accion, motivo, aulaEstado]
+        );
+    } catch (err) {
+        // Log silencioso — nunca bloquea la respuesta principal
+        console.error('⚠️  Error al registrar acceso (no crítico):', err.message);
+    }
+}

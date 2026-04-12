@@ -1,3 +1,4 @@
+// src/controllers/gruposController.js
 const pool = require('../config/db');
 
 const SHIFT_MAP = { morning: 'matutino', afternoon: 'vespertino', evening: 'nocturno' };

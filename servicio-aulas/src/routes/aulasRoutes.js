@@ -1,3 +1,4 @@
+// src/routes/aulasRoutes.js
 const express = require('express');
 const router  = express.Router();
 
@@ -14,5 +15,7 @@ router.put('/:id',                   verificarToken, soloAdmin, aulasCtrl.actual
 router.patch('/:id/status',          verificarToken, aulasCtrl.actualizarEstado);
 router.post('/:id/qr',               verificarToken, aulasCtrl.generarQR);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
+router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
+router.post('/:id/validar-acceso',   verificarToken, aulasCtrl.validarAccesoQR); // AQUÍ QUEDÓ LA NUEVA
 
 module.exports = router;
