@@ -7,16 +7,20 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secreto';
 
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
-
 exports.registrar = async (req, res) => {
-    const { nombre, email, password, rol_id } = req.body;
+    // ✅ FIX 1: Evitamos el undefined asignando null por defecto
+    const { 
+        nombre = null, email = null, password = null, 
+        rol_id = null, telefono = null, departamento = null 
+    } = req.body ?? {};    
+    
     try {
         const hash = await bcrypt.hash(password, 10);
         const result = await pool.query(
-            `INSERT INTO usuarios(nombre, email, password, rol_id)
-                VALUES($1, $2, $3, $4)
-                RETURNING id, nombre, email, rol_id, activo, creado_en`,
-            [nombre, email, hash, rol_id || 2]
+            `INSERT INTO usuarios(nombre, email, password, rol_id, telefono, departamento)
+             VALUES($1, $2, $3, $4, $5, $6)
+             RETURNING id, nombre, email, rol_id, activo, creado_en, telefono, departamento`,
+            [nombre, email, hash, rol_id || 2, telefono, departamento]
         );
         res.status(201).json(result.rows[0]);
     } catch (error) {
@@ -26,6 +30,77 @@ exports.registrar = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+// ─── CRUD USUARIOS ────────────────────────────────────────────────────────────
+
+exports.listar = async (req, res) => {
+    try {
+        // ✅ FIX 2: Agregamos u.telefono y u.departamento al SELECT
+        const result = await pool.query(
+            `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
+                    u.activo, u.creado_en, u.telefono, u.departamento
+             FROM usuarios u
+             LEFT JOIN roles r ON u.rol_id = r.id
+             ORDER BY u.creado_en DESC`
+        );
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.obtener = async (req, res) => {
+    try {
+        // ✅ FIX 2: Agregamos u.telefono y u.departamento al SELECT
+        const result = await pool.query(
+            `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
+                    u.activo, u.creado_en, u.telefono, u.departamento
+             FROM usuarios u
+             LEFT JOIN roles r ON u.rol_id = r.id
+             WHERE u.id = $1`,
+            [req.params.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        res.json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.actualizar = async (req, res) => {
+    // ✅ FIX 1: Evitamos el undefined asignando null por defecto
+    const { 
+        nombre = null, email = null, rol_id = null, 
+        activo = null, telefono = null, departamento = null 
+    } = req.body ?? {};    
+    
+    try {
+        const result = await pool.query(
+            `UPDATE usuarios
+             SET nombre = COALESCE($1, nombre),
+                 email  = COALESCE($2, email),
+                 rol_id = COALESCE($3, rol_id),
+                 activo = COALESCE($4, activo),
+                 telefono = COALESCE($5, telefono),
+                 departamento = COALESCE($6, departamento)
+             WHERE id = $7
+             RETURNING id, nombre, email, rol_id, activo, creado_en, telefono, departamento`,
+            [nombre, email, rol_id, activo, telefono, departamento, req.params.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        res.json(result.rows[0]);
+    } catch (error) {
+        if (error.code === '23505') {
+            return res.status(409).json({ error: 'El correo ya está en uso' });
+        }
+        res.status(500).json({ error: error.message });
+    }
+};
+
 
 exports.login = async (req, res) => {
     const { email, password } = req.body;
@@ -75,67 +150,6 @@ exports.login = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// ─── CRUD USUARIOS ────────────────────────────────────────────────────────────
-
-exports.listar = async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
-                        u.activo, u.creado_en
-                FROM usuarios u
-                LEFT JOIN roles r ON u.rol_id = r.id
-                ORDER BY u.creado_en DESC`
-        );
-        res.json(result.rows);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-exports.obtener = async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
-                        u.activo, u.creado_en
-                FROM usuarios u
-                LEFT JOIN roles r ON u.rol_id = r.id
-                WHERE u.id = $1`,
-            [req.params.id]
-        );
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuario no encontrado' });
-        }
-        res.json(result.rows[0]);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-exports.actualizar = async (req, res) => {
-    const { nombre, email, rol_id, activo } = req.body;
-    try {
-        const result = await pool.query(
-            `UPDATE usuarios
-                SET nombre = COALESCE($1, nombre),
-                    email  = COALESCE($2, email),
-                    rol_id = COALESCE($3, rol_id),
-                    activo = COALESCE($4, activo)
-                WHERE id = $5
-                RETURNING id, nombre, email, rol_id, activo, creado_en`,
-            [nombre, email, rol_id, activo, req.params.id]
-        );
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuario no encontrado' });
-        }
-        res.json(result.rows[0]);
-    } catch (error) {
-        if (error.code === '23505') {
-            return res.status(409).json({ error: 'El correo ya está en uso' });
-        }
         res.status(500).json({ error: error.message });
     }
 };

@@ -26,22 +26,24 @@ exports.listar = async (req, res) => {
 };
 
 exports.crear = async (req, res) => {
-    const { name, grade, shift, studentCount, tutorName, status } = req.body;
+    const { name = null, grade = null, shift = 'morning', studentCount = 30, tutorName = null, status = 'active' } = req.body ?? {};
+
     try {
         const result = await pool.query(
             `INSERT INTO grupos(nombre, grado, turno, num_alumnos, tutor_nombre, estado)
              VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-            [name, grade, SHIFT_MAP[shift] || 'matutino', studentCount || 30,
-             tutorName, status === 'active' ? 'activo' : 'inactivo']
+            [name, grade, SHIFT_MAP[shift] || 'matutino', studentCount, tutorName, status === 'active' ? 'activo' : 'inactivo']
         );
         res.status(201).json(mapGrupo(result.rows[0]));
     } catch (error) {
+        if (error.code === '23505') return res.status(409).json({ error: 'El nombre del grupo ya existe' });
         res.status(500).json({ error: error.message });
     }
 };
 
 exports.actualizar = async (req, res) => {
-    const { name, grade, shift, studentCount, tutorName, status } = req.body;
+    const { name = null, grade = null, shift = null, studentCount = null, tutorName = null, status = null } = req.body ?? {};
+    
     try {
         const result = await pool.query(
             `UPDATE grupos
