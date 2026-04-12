@@ -14,8 +14,8 @@ exports.registrar = async (req, res) => {
         const hash = await bcrypt.hash(password, 10);
         const result = await pool.query(
             `INSERT INTO usuarios(nombre, email, password, rol_id)
-             VALUES($1, $2, $3, $4)
-             RETURNING id, nombre, email, rol_id, activo, creado_en`,
+                VALUES($1, $2, $3, $4)
+                RETURNING id, nombre, email, rol_id, activo, creado_en`,
             [nombre, email, hash, rol_id || 2]
         );
         res.status(201).json(result.rows[0]);
@@ -32,9 +32,9 @@ exports.login = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT u.*, r.nombre AS rol_nombre
-             FROM usuarios u
-             LEFT JOIN roles r ON u.rol_id = r.id
-             WHERE u.email = $1 AND u.activo = true`,
+                FROM usuarios u
+                LEFT JOIN roles r ON u.rol_id = r.id
+                WHERE u.email = $1 AND u.activo = true`,
             [email]
         );
 
@@ -85,10 +85,10 @@ exports.listar = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
-                    u.activo, u.creado_en
-             FROM usuarios u
-             LEFT JOIN roles r ON u.rol_id = r.id
-             ORDER BY u.creado_en DESC`
+                        u.activo, u.creado_en
+                FROM usuarios u
+                LEFT JOIN roles r ON u.rol_id = r.id
+                ORDER BY u.creado_en DESC`
         );
         res.json(result.rows);
     } catch (error) {
@@ -100,10 +100,10 @@ exports.obtener = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
-                    u.activo, u.creado_en
-             FROM usuarios u
-             LEFT JOIN roles r ON u.rol_id = r.id
-             WHERE u.id = $1`,
+                        u.activo, u.creado_en
+                FROM usuarios u
+                LEFT JOIN roles r ON u.rol_id = r.id
+                WHERE u.id = $1`,
             [req.params.id]
         );
         if (result.rows.length === 0) {
@@ -120,12 +120,12 @@ exports.actualizar = async (req, res) => {
     try {
         const result = await pool.query(
             `UPDATE usuarios
-             SET nombre = COALESCE($1, nombre),
-                 email  = COALESCE($2, email),
-                 rol_id = COALESCE($3, rol_id),
-                 activo = COALESCE($4, activo)
-             WHERE id = $5
-             RETURNING id, nombre, email, rol_id, activo, creado_en`,
+                SET nombre = COALESCE($1, nombre),
+                    email  = COALESCE($2, email),
+                    rol_id = COALESCE($3, rol_id),
+                    activo = COALESCE($4, activo)
+                WHERE id = $5
+                RETURNING id, nombre, email, rol_id, activo, creado_en`,
             [nombre, email, rol_id, activo, req.params.id]
         );
         if (result.rows.length === 0) {
@@ -194,11 +194,11 @@ exports.listarProfesores = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT u.id, u.nombre, u.email, u.rol_id, r.nombre AS rol_nombre,
-                    u.activo, u.creado_en
-             FROM usuarios u
-             LEFT JOIN roles r ON u.rol_id = r.id
-             WHERE u.rol_id != 1  -- not admin
-             ORDER BY u.nombre ASC`
+                        u.activo, u.creado_en
+                FROM usuarios u
+                LEFT JOIN roles r ON u.rol_id = r.id
+                WHERE u.rol_id != 1  -- not admin
+                ORDER BY u.nombre ASC`
         );
         res.json(result.rows);
     } catch (error) {
