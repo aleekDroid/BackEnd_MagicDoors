@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server-prod.js"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +17,9 @@
     "express-validator": "^7.3.1",
     "morgan": "^1.10.1",
     "nodemon": "^3.1.14",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.1"
   }
 }
