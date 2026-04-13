@@ -2,20 +2,13 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
-const poolConfig = process.env.DATABASE_URL 
-    ? { 
-        connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false } 
-      }
-    : {
-        user:     process.env.DB_USER     || 'postgres',
-        host:     process.env.DB_HOST     || 'localhost',
-        database: process.env.DB_NAME     || 'DB_Aulas', // (Cambia a DB_Usuarios en el otro archivo)
-        password: process.env.DB_PASSWORD || '123',
-        port:     parseInt(process.env.DB_PORT) || 5432,
-      };
-
-const pool = new Pool(poolConfig);
+const pool = new Pool({
+    user:     process.env.DB_USER     || 'postgres',
+    host:     process.env.DB_HOST     || 'localhost',
+    database: process.env.DB_NAME     || 'DB_Aulas',
+    password: process.env.DB_PASSWORD || 'admin@',
+    port:     parseInt(process.env.DB_PORT) || 5432,
+});
 
 // Verify connection on startup
 pool.connect()

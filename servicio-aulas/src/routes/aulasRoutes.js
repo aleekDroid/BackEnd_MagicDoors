@@ -18,9 +18,13 @@ router.get('/:id',                   verificarToken, aulasCtrl.obtenerAula);
 router.post('/',                     verificarToken, soloAdmin, aulasCtrl.crearAula);
 router.put('/:id',                   verificarToken, soloAdmin, aulasCtrl.actualizarAula);
 router.patch('/:id/status',          verificarToken, aulasCtrl.actualizarEstado);
+router.get('/:id/qr-activo',         verificarToken, aulasCtrl.obtenerQRActivo);
 router.post('/:id/qr',               verificarToken, aulasCtrl.generarQR);
-router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
+router.post('/:id/generar-qr-aula',  verificarToken, aulasCtrl.generarQRAula);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
 router.post('/:id/validar-acceso',   verificarToken, aulasCtrl.validarAccesoQR); 
+
+// Nueva ruta para mandar orden directa al ESP32 (abrir/cerrar)
+router.post('/:id/control-puerta',   verificarToken, aulasCtrl.controlPuertaESP32);
 
 module.exports = router;

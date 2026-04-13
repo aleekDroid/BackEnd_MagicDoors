@@ -15,25 +15,25 @@ function mapAula(row, sesion) {
     const status = statusMap[row.estado] || 'inactive';
 
     const classroom = {
-        id:       String(row.id),
-        name:     row.nombre,
-        label:    `Aula ${row.nombre}`,
+        id: String(row.id),
+        name: row.nombre,
+        label: `Aula ${row.nombre}`,
         status,
-        row:      rowLetter === 'A' ? 'top' : 'bottom',
+        row: rowLetter === 'A' ? 'top' : 'bottom',
         col,
         capacity: row.capacidad || 30,
     };
 
     if (sesion && sesion.activa) {
         classroom.currentSession = {
-            teacherId:    String(sesion.profesor_id || ''),
-            teacherName:  sesion.profesor_nombre,
-            subject:      sesion.materia_nombre,
-            subjectCode:  sesion.materia_codigo,
-            group:        sesion.grupo_nombre,
-            startTime:    sesion.hora_inicio ? sesion.hora_inicio.substring(0, 5) : '',
-            endTime:      sesion.hora_fin    ? sesion.hora_fin.substring(0, 5)    : '',
-            schedule:     sesion.dias_semana || '',
+            teacherId: String(sesion.profesor_id || ''),
+            teacherName: sesion.profesor_nombre,
+            subject: sesion.materia_nombre,
+            subjectCode: sesion.materia_codigo,
+            group: sesion.grupo_nombre,
+            startTime: sesion.hora_inicio ? sesion.hora_inicio.substring(0, 5) : '',
+            endTime: sesion.hora_fin ? sesion.hora_fin.substring(0, 5) : '',
+            schedule: sesion.dias_semana || '',
         };
     }
 
@@ -162,6 +162,14 @@ exports.actualizarEstado = async (req, res) => {
             WHERE a.id = $1
         `, [req.params.id]);
 
+        // ── LLAMADA FÍSICA AL ESP32 ──────────────────────────
+        const aulaNombre = full.rows[0].nombre;
+        if (status === 'active') {
+            enviarOrdenAlESP32(aulaNombre, 'abrir');
+        } else if (status === 'inactive' || status === 'maintenance') {
+            enviarOrdenAlESP32(aulaNombre, 'cerrar');
+        }
+
         res.json(mapAula(full.rows[0], full.rows[0].activa ? full.rows[0] : null));
     } catch (error) {
         await client.query('ROLLBACK');
@@ -187,6 +195,64 @@ exports.generarQR = async (req, res) => {
         });
 
         res.json({ qrData });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.generarQRAula = async (req, res) => {
+    const aulaId = req.params.id;
+    const force = req.body.force === true;
+
+    try {
+        const aula = await pool.query('SELECT * FROM aulas WHERE id = $1', [aulaId]);
+        if (aula.rows.length === 0) return res.status(404).json({ error: 'Aula no encontrada' });
+
+        if (!force) {
+            const activeQr = await pool.query(
+                `SELECT codigo FROM qr_dinamicos WHERE aula_id = $1 AND activo = true AND expiracion > NOW() LIMIT 1`,
+                [aulaId]
+            );
+            if (activeQr.rows.length > 0) {
+                return res.status(409).json({ activeQrData: activeQr.rows[0].codigo });
+            }
+        }
+
+        const sessionId = `session-${uuidv4()}`;
+        const qrData = JSON.stringify({
+            classroomId: aulaId,
+            name: aula.rows[0].nombre,
+            sessionId,
+            timestamp: new Date().toISOString(),
+        });
+
+        // Invalidar códigos anteriores del aula
+        await pool.query(`UPDATE qr_dinamicos SET activo = false WHERE aula_id = $1`, [aulaId]);
+
+        // Guardar el código QR generado en la tabla qr_dinamicos con 24 horas de expiración
+        await pool.query(
+            `INSERT INTO qr_dinamicos (aula_id, codigo, expiracion)
+             VALUES ($1, $2, NOW() + INTERVAL '24 hours')
+             RETURNING *`,
+            [aulaId, qrData]
+        );
+
+        res.json({ qrData });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.obtenerQRActivo = async (req, res) => {
+    try {
+        const activeQr = await pool.query(
+            `SELECT codigo FROM qr_dinamicos WHERE aula_id = $1 AND activo = true AND expiracion > NOW() LIMIT 1`,
+            [req.params.id]
+        );
+        if (activeQr.rows.length > 0) {
+            return res.json({ activeQrData: activeQr.rows[0].codigo });
+        }
+        res.status(404).json({ error: 'No hay QR activo' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -245,17 +311,17 @@ exports.activarSesion = async (req, res) => {
         };
 
         const nuevaInicio = horaToMinutes(hora_inicio);
-        const nuevaFin    = horaToMinutes(hora_fin);
+        const nuevaFin = horaToMinutes(hora_fin);
 
         for (const sesion of conflictos.rows) {
             const diasExistentes = String(sesion.dias_semana).split(',').map(s => s.trim());
-            const diasComunes    = diasNuevos.filter(d => diasExistentes.includes(d));
+            const diasComunes = diasNuevos.filter(d => diasExistentes.includes(d));
 
             // Sin días en común → sin choque posible, siguiente
             if (diasComunes.length === 0) continue;
 
             const existeInicio = horaToMinutes(sesion.hora_inicio);
-            const existeFin    = horaToMinutes(sesion.hora_fin);
+            const existeFin = horaToMinutes(sesion.hora_fin);
 
             const haySolapamiento = nuevaInicio < existeFin && nuevaFin > existeInicio;
             if (!haySolapamiento) continue;
@@ -384,7 +450,7 @@ exports.accesoIot = async (req, res) => {
         //    El margen de entrada amplio evita que el docente quede fuera por retrasos menores.
         const TOLERANCIA_MIN = 15;
         const inicioPermitido = horaToMinutes(sesion.hora_inicio) - TOLERANCIA_MIN;
-        const finPermitido    = horaToMinutes(sesion.hora_fin)    + TOLERANCIA_MIN;
+        const finPermitido = horaToMinutes(sesion.hora_fin) + TOLERANCIA_MIN;
 
         if (ahoraMin < inicioPermitido || ahoraMin > finPermitido) {
             return res.json({ abrir: false, motivo: 'FUERA_DE_HORARIO' });
@@ -393,11 +459,11 @@ exports.accesoIot = async (req, res) => {
         // ── 6. Todo OK → autorizar acceso ────────────────────────────────────────
         console.log(`✅ IoT: Acceso autorizado. Profesor ${profesor_id} → Aula ${aula_id}`);
         return res.json({
-            abrir:    true,
-            motivo:   'ACCESO_AUTORIZADO',
+            abrir: true,
+            motivo: 'ACCESO_AUTORIZADO',
             sesion: {
                 materia: sesion.materia_nombre,
-                grupo:   sesion.grupo_nombre,
+                grupo: sesion.grupo_nombre,
             },
         });
 
@@ -425,7 +491,7 @@ exports.accesoIot = async (req, res) => {
  * Llegada tarde (> 10 min después de hora_inicio): DENEGADO, registra anomalía.
  */
 exports.validarAccesoQR = async (req, res) => {
-    const aulaId    = parseInt(req.params.id, 10);
+    const aulaId = parseInt(req.params.id, 10);
     const usuarioId = parseInt(req.body?.usuario_id, 10);
 
     if (!usuarioId || isNaN(usuarioId)) {
@@ -435,7 +501,7 @@ exports.validarAccesoQR = async (req, res) => {
     let client;
 
     try {
-        const client = await pool.connect();    
+        const client = await pool.connect();
         await client.query('BEGIN');
 
         // ── 1. Leer estado actual del aula (FOR UPDATE para evitar race conditions) ──
@@ -458,23 +524,31 @@ exports.validarAccesoQR = async (req, res) => {
             const comando = aula.estado === 'ocupada' ? 'CLOSE_DOOR' : 'OPEN_DOOR';
 
             await client.query(`UPDATE aulas SET estado = $1 WHERE id = $2`, [nuevoEstado, aulaId]);
-            
+
             if (nuevoEstado === 'disponible') {
                 await client.query(
-                    `UPDATE sesiones_aula SET activa = false WHERE aula_id = $1 AND activa = true`, 
+                    `UPDATE sesiones_aula SET activa = false WHERE aula_id = $1 AND activa = true`,
                     [aulaId]
                 );
             }
-            
+
             await client.query('COMMIT');
 
             await _registrarAcceso(pool, {
-                aulaId, 
+                aulaId,
                 usuarioId,
                 accion: comando === 'OPEN_DOOR' ? 'entrada' : 'salida',
                 motivo: 'llave_maestra_admin',
                 aulaEstado: nuevoEstado,
             });
+
+            // ── LLAMADA FÍSICA AL ESP32 (LLAVE MAESTRA) ──
+            if (comando === 'OPEN_DOOR') {
+                enviarOrdenAlESP32(aula.nombre, 'abrir');
+            } else {
+                // Hay un delay de 60s antes de cerrar físicamente
+                setTimeout(() => enviarOrdenAlESP32(aula.nombre, 'cerrar'), 60000);
+            }
 
             return res.json({
                 acceso: comando === 'OPEN_DOOR' ? 'entrada' : 'salida',
@@ -575,16 +649,19 @@ exports.validarAccesoQR = async (req, res) => {
                 sesionId: sesion.id,
             });
 
+            // ── LLAMADA FÍSICA AL ESP32 (SALIDA VOLUNTARIA) ──
+            setTimeout(() => enviarOrdenAlESP32(aula.nombre, 'cerrar'), 60000);
+
             // Instrucción al servicio IoT: CLOSE_DOOR con 60 s de delay
             return res.json({
-                acceso:    'salida',
-                comando:   'CLOSE_DOOR',
-                delayMs:   60_000,   // el servicio IoT mantiene abierta 60s antes de cerrar
-                aula:      aula.nombre,
-                profesor:  sesion.profesor_nombre,
-                materia:   sesion.materia_nombre,
-                grupo:     sesion.grupo_nombre,
-                mensaje:   'Clase finalizada. La puerta cerrará en 60 segundos.',
+                acceso: 'salida',
+                comando: 'CLOSE_DOOR',
+                delayMs: 60_000,   // el servicio IoT mantiene abierta 60s antes de cerrar
+                aula: aula.nombre,
+                profesor: sesion.profesor_nombre,
+                materia: sesion.materia_nombre,
+                grupo: sesion.grupo_nombre,
+                mensaje: 'Clase finalizada. La puerta cerrará en 60 segundos.',
             });
         }
 
@@ -646,8 +723,8 @@ exports.validarAccesoQR = async (req, res) => {
                 sesionId: sesion.id,
             });
             return res.status(403).json({
-                acceso:  'denegado',
-                motivo:  `Aún no es hora. Tu clase inicia a las ${sesion.hora_inicio.substring(0, 5)}`,
+                acceso: 'denegado',
+                motivo: `Aún no es hora. Tu clase inicia a las ${sesion.hora_inicio.substring(0, 5)}`,
             });
         }
 
@@ -656,15 +733,15 @@ exports.validarAccesoQR = async (req, res) => {
             await client.query('ROLLBACK');
             await _registrarAcceso(pool, {
                 aulaId, usuarioId,
-                accion:  'denegado',
-                motivo:  'llegada_tarde',      
+                accion: 'denegado',
+                motivo: 'llegada_tarde',
                 aulaEstado: aula.estado,
                 sesionId: sesion.id,
             });
             return res.status(403).json({
-                acceso:   'denegado',
-                motivo:   'Acceso denegado: llegada fuera del rango permitido (máx. 10 min)',
-                anomalia: true, 
+                acceso: 'denegado',
+                motivo: 'Acceso denegado: llegada fuera del rango permitido (máx. 10 min)',
+                anomalia: true,
             });
         }
 
@@ -673,8 +750,8 @@ exports.validarAccesoQR = async (req, res) => {
             await client.query('ROLLBACK');
             await _registrarAcceso(pool, {
                 aulaId, usuarioId,
-                accion:  'denegado',
-                motivo:  v.clase_terminada ? 'clase_ya_terminada' : 'fuera_de_ventana',
+                accion: 'denegado',
+                motivo: v.clase_terminada ? 'clase_ya_terminada' : 'fuera_de_ventana',
                 aulaEstado: aula.estado,
                 sesionId: sesion.id,
             });
@@ -697,21 +774,24 @@ exports.validarAccesoQR = async (req, res) => {
 
         await _registrarAcceso(pool, {
             aulaId, usuarioId,
-            accion:  'entrada',
-            motivo:  'acceso_autorizado',
+            accion: 'entrada',
+            motivo: 'acceso_autorizado',
             aulaEstado: 'ocupada',
             sesionId: sesion.id,
         });
 
+        // ── LLAMADA FÍSICA AL ESP32 (ENTRADA VÁLIDA) ──
+        enviarOrdenAlESP32(aula.nombre, 'abrir');
+
         return res.json({
-            acceso:   'entrada',
-            comando:  'OPEN_DOOR',
-            aula:     aula.nombre,
+            acceso: 'entrada',
+            comando: 'OPEN_DOOR',
+            aula: aula.nombre,
             profesor: sesion.profesor_nombre,
-            materia:  sesion.materia_nombre,
-            grupo:    sesion.grupo_nombre,
-            horario:  `${sesion.hora_inicio.substring(0, 5)} – ${sesion.hora_fin.substring(0, 5)}`,
-            mensaje:  'Acceso autorizado. ¡Buen inicio de clase!',
+            materia: sesion.materia_nombre,
+            grupo: sesion.grupo_nombre,
+            horario: `${sesion.hora_inicio.substring(0, 5)} – ${sesion.hora_fin.substring(0, 5)}`,
+            mensaje: 'Acceso autorizado. ¡Buen inicio de clase!',
         });
 
     } catch (error) {
@@ -746,7 +826,7 @@ exports.cierreAutomatico = async () => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        
+
         // 1. Buscamos y apagamos las sesiones que ya terminaron (hora_fin < hora actual)
         const result = await client.query(`
             UPDATE sesiones_aula
@@ -758,7 +838,7 @@ exports.cierreAutomatico = async () => {
         if (result.rows.length > 0) {
             // 2. Extraemos los IDs de las aulas que se quedaron "abiertas"
             const aulasIds = result.rows.map(row => row.aula_id);
-            
+
             // 3. Regresamos esas aulas a estado 'disponible'
             await client.query(`
                 UPDATE aulas 
@@ -779,7 +859,7 @@ exports.cierreAutomatico = async () => {
             }
             console.log(`🧹 Barrendero ejecutado: Se liberaron automáticamente ${result.rows.length} aulas.`);
         }
-        
+
         await client.query('COMMIT');
     } catch (error) {
         await client.query('ROLLBACK');
@@ -801,7 +881,7 @@ exports.listarAnomalias = async (req, res) => {
             const response = await fetch('http://localhost:3001/usuarios', {
                 headers: { 'Authorization': req.headers['authorization'] }
             });
-            
+
             if (response.ok) {
                 const usuarios = await response.json();
                 anomalias = anomalias.map(a => {
@@ -837,3 +917,73 @@ async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaE
         console.error('⚠️  Error al registrar acceso (no crítico):', err.message);
     }
 }
+
+// ─── INTEGRACIÓN CON ESP32 (HARDWARE) ─────────────────────────────────────────
+
+// Función auxiliar para mandar la petición HTTP al ESP32
+async function enviarOrdenAlESP32(aulaNombre, accion) {
+    // Definimos la IP del ESP32. Puede venir por variable de entorno o usar una por defecto.
+    const esp32IP = process.env.ESP32_IP || '192.168.0.55'; // <--- Cambiada aquí a la 55
+    // Aseguramos formato 'A101' aunque en base de datos esté como 'A-101'
+    const nombreLimpio = String(aulaNombre).replace('-', '');
+
+    try {
+        // Node 18+ incluye fetch nativo
+        const url = `http://${esp32IP}/${nombreLimpio}/${accion}`;
+        const respuesta = await fetch(url);
+
+        if (respuesta.ok) {
+            console.log(`✅ Orden enviada al ESP32 con éxito: ${nombreLimpio} -> ${accion}`);
+            return true;
+        } else {
+            console.error(`❌ El ESP32 respondió con status Http: ${respuesta.status}`);
+            return false;
+        }
+    } catch (error) {
+        console.error(`❌ Error de red al contactar al ESP32 (${esp32IP}):`, error.message);
+        return false;
+    }
+}
+
+/**
+ * POST /aulas/:id/control-puerta
+ * Body: { accion: "abrir" | "cerrar" }
+ * Nueva API dedicada para enviar comandos físicos al ESP sin alterar el esquema actual de BD.
+ */
+exports.controlPuertaESP32 = async (req, res) => {
+    const aulaId = req.params.id;
+    const { accion } = req.body;
+
+    if (accion !== 'abrir' && accion !== 'cerrar') {
+        return res.status(400).json({ error: 'La acción física debe ser "abrir" o "cerrar"' });
+    }
+
+    try {
+        // Obtenemos el nombre del aula desde la base de datos (Ej: "A-101")
+        const result = await pool.query('SELECT nombre FROM aulas WHERE id = $1', [aulaId]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Aula no encontrada' });
+        }
+
+        const aulaNombre = result.rows[0].nombre;
+
+        // Ahora sí, llamamos directamente la función del ESP32
+        const envioExitoso = await enviarOrdenAlESP32(aulaNombre, accion);
+
+        if (envioExitoso) {
+            res.json({
+                mensaje: `Se ha enviado la orden de ${accion} exitosamente al aula ${aulaNombre}.`,
+                aula: aulaNombre,
+                accion: accion
+            });
+        } else {
+            res.status(502).json({
+                error: `No se pudo comunicar con el hardware de la puerta del aula ${aulaNombre}. Revisa la conexión del ESP32.`
+            });
+        }
+
+    } catch (error) {
+        console.error('❌ Error en controlPuertaESP32:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
