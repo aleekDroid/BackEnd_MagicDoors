@@ -952,36 +952,58 @@ async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaE
 
 // ─── INTEGRACIÓN CON ESP32 (HARDWARE) ─────────────────────────────────────────
 
-// Función auxiliar para mandar la petición HTTP al ESP32
+// Función auxiliar para mandar la petición HTTP mediante Blynk IoT
 async function enviarOrdenAlESP32(aulaNombre, accion) {
-    // Definimos la IP del ESP32. Puede venir por variable de entorno o usar una por defecto.
-    const esp32IP = process.env.ESP32_IP || '192.168.0.55'; // <--- IP
+    const BLYNK_TOKEN = process.env.BLYNK_AUTH_TOKEN;
+    
+    if (!BLYNK_TOKEN) {
+        console.error('❌ [Blynk] ERROR GRAVE: BLYNK_AUTH_TOKEN no está definido en las variables de entorno (.env). No se puede abrir la puerta remotamente.');
+        return false;
+    }
+
     const nombreLimpio = String(aulaNombre).replace('-', '');
-    const url = `http://${esp32IP}/${nombreLimpio}/${accion}`;
+    
+    // Mapeo automático de Aulas a Pines Virtuales.
+    // A101 -> V1, A102 -> V2, A103 -> V3
+    let pinVirtual = "";
+    if (nombreLimpio === "A101") pinVirtual = "V1";
+    if (nombreLimpio === "A102") pinVirtual = "V2";
+    if (nombreLimpio === "A103") pinVirtual = "V3";
 
-    console.log(`📡 [ESP32] Intentando contactar: ${url}`);
+    if (pinVirtual === "") {
+        console.error(`❌ [Blynk] Aula desconocida (${nombreLimpio}), imposible mapear a un PIN Virtual.`);
+        return false;
+    }
 
-    // Hacemos que la petición no se quede colgada si el ESP está apagado
+    // Blynk espera el valor 1 para encender/abrir, 0 para apagar/cerrar
+    const valor = (accion === 'abrir') ? 1 : 0;
+    
+    // API Universal de Blynk
+    const url = `https://blynk.cloud/external/api/update?token=${BLYNK_TOKEN}&${pinVirtual}=${valor}`;
+
+    console.log(`📡 [Blynk] Solicitando actualización de Datastream ${pinVirtual} a valor ${valor}`);
+
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 segundos de timeout
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
 
     try {
         const respuesta = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
 
         if (respuesta.ok) {
-            console.log(`✅ [ESP32] ¡Éxito! Orden ejecutada: ${nombreLimpio} -> ${accion}`);
+            console.log(`✅ [Blynk] ¡Éxito! Nube notificada: ${nombreLimpio} -> ${accion}`);
             return true;
         } else {
-            console.error(`❌ [ESP32] Respondió con HTTP Status: ${respuesta.status}`);
+            const errorText = await respuesta.text();
+            console.error(`❌ [Blynk] Error HTTP: ${respuesta.status} - Motivo: ${errorText}`);
             return false;
         }
     } catch (error) {
         clearTimeout(timeoutId);
         if (error.name === 'AbortError') {
-            console.error(`❌ [ESP32] Timeout: El ESP32 no respondió en la IP ${esp32IP} (probablemente apagado o desconectado).`);
+            console.error(`❌ [Blynk] Timeout: Blynk.cloud no respondió rápido.`);
         } else {
-            console.error(`❌ [ESP32] Error de red:`, error.message);
+            console.error(`❌ [Blynk] Error de red:`, error.message);
         }
         return false;
     }
