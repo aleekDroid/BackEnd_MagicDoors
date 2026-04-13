@@ -192,44 +192,222 @@ exports.generarQR = async (req, res) => {
     }
 };
 
-// ── Sesiones ────────────────────────────────────────────────────────────────
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET || 'secreto';
+
+/**
+ * POST /aulas/:id/sesion
+ * Crea una sesión activa validando choques de horario contra el aula y el profesor.
+ * Body: { profesor_id, profesor_nombre, materia_id, materia_nombre, materia_codigo,
+ *         grupo_id, grupo_nombre, hora_inicio, hora_fin, dias_semana: number[] }
+ */
 exports.activarSesion = async (req, res) => {
-    const { profesor_id, profesor_nombre, materia_id, materia_nombre, materia_codigo,
-            grupo_id, grupo_nombre, hora_inicio, hora_fin, dias_semana } = req.body;
+    const {
+        profesor_id, profesor_nombre,
+        materia_id, materia_nombre, materia_codigo,
+        grupo_id, grupo_nombre,
+        hora_inicio, hora_fin,
+        dias_semana,   // llega como number[]  ej: [1, 3, 5]
+    } = req.body;
     const aulaId = req.params.id;
+
+    // ── 1. Normalizar días entrantes a Set de strings para comparación O(1) ──
+    const diasNuevos = Array.isArray(dias_semana)
+        ? dias_semana.map(String)
+        : String(dias_semana).split(',').map(s => s.trim());
+
+    if (diasNuevos.length === 0) {
+        return res.status(400).json({ error: 'Debes seleccionar al menos un día' });
+    }
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        // Deactivate any existing active session for this aula
+        // ── 2. Traer todas las sesiones activas del aula y del profesor ─────────
+        //    Una sola query que devuelve ambos conjuntos — filtramos en JS
+        const conflictos = await client.query(`
+            SELECT id, aula_id, profesor_id, hora_inicio, hora_fin, dias_semana
+            FROM sesiones_aula
+            WHERE activa = true
+              AND (aula_id = $1 OR profesor_id = $2)
+        `, [aulaId, profesor_id]);
+
+        // ── 3. Validación de choques en JavaScript ────────────────────────────
+        //    Para cada sesión existente, revisamos:
+        //      a) ¿Comparte días con la nueva sesión?
+        //      b) ¿Las horas se solapan?
+        //    Fórmula de solapamiento: nuevaInicio < existeFin && nuevaFin > existeInicio
+
+        const horaToMinutes = (t) => {
+            const [h, m] = t.substring(0, 5).split(':').map(Number);
+            return h * 60 + m;
+        };
+
+        const nuevaInicio = horaToMinutes(hora_inicio);
+        const nuevaFin    = horaToMinutes(hora_fin);
+
+        for (const sesion of conflictos.rows) {
+            const diasExistentes = String(sesion.dias_semana).split(',').map(s => s.trim());
+            const diasComunes    = diasNuevos.filter(d => diasExistentes.includes(d));
+
+            // Sin días en común → sin choque posible, siguiente
+            if (diasComunes.length === 0) continue;
+
+            const existeInicio = horaToMinutes(sesion.hora_inicio);
+            const existeFin    = horaToMinutes(sesion.hora_fin);
+
+            const haySolapamiento = nuevaInicio < existeFin && nuevaFin > existeInicio;
+            if (!haySolapamiento) continue;
+
+            // Hay choque — distinguir si es por aula o por profesor
+            await client.query('ROLLBACK');
+
+            if (String(sesion.aula_id) === String(aulaId)) {
+                return res.status(409).json({
+                    error: 'El aula ya está ocupada en ese horario',
+                    dias_conflicto: diasComunes,
+                });
+            } else {
+                return res.status(409).json({
+                    error: 'El profesor ya tiene una clase asignada en ese horario',
+                    dias_conflicto: diasComunes,
+                });
+            }
+        }
+
+        // ── 4. Sin choques → desactivar sesión anterior del aula y crear la nueva ─
         await client.query(
             `UPDATE sesiones_aula SET activa = false WHERE aula_id = $1 AND activa = true`,
             [aulaId]
         );
 
-        // Create new active session
+        // Guardar días como string separado por comas (respeta el VARCHAR existente)
+        const diasString = diasNuevos.join(',');
+
         await client.query(
             `INSERT INTO sesiones_aula
              (aula_id, profesor_id, profesor_nombre, materia_id, materia_nombre, materia_codigo,
               grupo_id, grupo_nombre, hora_inicio, hora_fin, dias_semana, activa)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true)`,
-            [aulaId, profesor_id, profesor_nombre, materia_id, materia_nombre, materia_codigo,
-             grupo_id, grupo_nombre, hora_inicio, hora_fin, dias_semana]
+            [
+                aulaId, profesor_id, profesor_nombre,
+                materia_id, materia_nombre, materia_codigo,
+                grupo_id, grupo_nombre,
+                hora_inicio, hora_fin, diasString,
+            ]
         );
 
-        // Update aula estado to ocupada
         await client.query(`UPDATE aulas SET estado = 'ocupada' WHERE id = $1`, [aulaId]);
-
         await client.query('COMMIT');
+
         res.json({ mensaje: 'Sesión activada correctamente' });
+
     } catch (error) {
         await client.query('ROLLBACK');
+        console.error('❌ activarSesion error:', error);
         res.status(500).json({ error: error.message });
     } finally {
         client.release();
     }
 };
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /aulas/acceso-iot  (sin middleware de auth — lo llama el hardware)
+// Body: { qr_token: string, aula_id: number }
+// ─────────────────────────────────────────────────────────────────────────────
+
+exports.accesoIot = async (req, res) => {
+    const { qr_token, aula_id } = req.body;
+
+    if (!qr_token || !aula_id) {
+        return res.json({ abrir: false, motivo: 'DATOS_INCOMPLETOS' });
+    }
+
+    // ── 1. Verificar y decodificar el JWT del QR ──────────────────────────────
+    let payload;
+    try {
+        payload = jwt.verify(qr_token, JWT_SECRET);
+    } catch (err) {
+        // Token expirado (JsonWebTokenError / TokenExpiredError)
+        console.warn('⚠️ IoT: QR inválido o expirado:', err.message);
+        return res.json({ abrir: false, motivo: 'QR_INVALIDO' });
+    }
+
+    const { profesor_id } = payload;
+
+    if (!profesor_id) {
+        return res.json({ abrir: false, motivo: 'QR_INVALIDO' });
+    }
+
+    try {
+        // ── 2. Obtener hora y día actual desde PostgreSQL (evita desfase de TZ) ──
+        //    dow: 0=domingo, 1=lunes … 6=sábado  (PostgreSQL EXTRACT)
+        const tiempoRes = await pool.query(`
+            SELECT
+                CURRENT_TIME               AS ahora,
+                EXTRACT(DOW FROM NOW())    AS dow
+        `);
+        const { ahora, dow } = tiempoRes.rows[0];
+        const diaActual = String(parseInt(dow, 10)); // '1' = lunes, etc.
+
+        const horaToMinutes = (t) => {
+            const [h, m] = t.substring(0, 5).split(':').map(Number);
+            return h * 60 + m;
+        };
+        const ahoraMin = horaToMinutes(ahora);
+
+        // ── 3. Buscar sesión activa del profesor en el aula indicada ─────────────
+        const sesionRes = await pool.query(`
+            SELECT id, hora_inicio, hora_fin, dias_semana, materia_nombre, grupo_nombre
+            FROM sesiones_aula
+            WHERE profesor_id = $1
+              AND aula_id     = $2
+              AND activa      = true
+        `, [profesor_id, aula_id]);
+
+        if (sesionRes.rows.length === 0) {
+            return res.json({ abrir: false, motivo: 'SIN_SESION_EN_ESTE_AULA' });
+        }
+
+        const sesion = sesionRes.rows[0];
+
+        // ── 4. Verificar que hoy es uno de los días de la sesión ─────────────────
+        const diasSesion = String(sesion.dias_semana).split(',').map(s => s.trim());
+        if (!diasSesion.includes(diaActual)) {
+            return res.json({ abrir: false, motivo: 'FUERA_DE_HORARIO' });
+        }
+
+        // ── 5. Verificar ventana de tiempo con tolerancia de ±15 minutos ─────────
+        //    Apertura permitida: desde (hora_inicio - 15min) hasta (hora_fin + 15min)
+        //    El margen de entrada amplio evita que el docente quede fuera por retrasos menores.
+        const TOLERANCIA_MIN = 15;
+        const inicioPermitido = horaToMinutes(sesion.hora_inicio) - TOLERANCIA_MIN;
+        const finPermitido    = horaToMinutes(sesion.hora_fin)    + TOLERANCIA_MIN;
+
+        if (ahoraMin < inicioPermitido || ahoraMin > finPermitido) {
+            return res.json({ abrir: false, motivo: 'FUERA_DE_HORARIO' });
+        }
+
+        // ── 6. Todo OK → autorizar acceso ────────────────────────────────────────
+        console.log(`✅ IoT: Acceso autorizado. Profesor ${profesor_id} → Aula ${aula_id}`);
+        return res.json({
+            abrir:    true,
+            motivo:   'ACCESO_AUTORIZADO',
+            sesion: {
+                materia: sesion.materia_nombre,
+                grupo:   sesion.grupo_nombre,
+            },
+        });
+
+    } catch (error) {
+        console.error('❌ accesoIot error:', error);
+        // Ante error interno, denegamos por seguridad (fail-closed)
+        return res.json({ abrir: false, motivo: 'ERROR_INTERNO' });
+    }
+};
+
 
 /**
  * POST /aulas/:id/validar-acceso

@@ -11,6 +11,9 @@ const { verificarToken, soloAdmin } = require('../middleware/authMiddleware');
 router.get('/',                      verificarToken, aulasCtrl.listarAulas);
 router.get('/historial',             verificarToken, soloAdmin, aulasCtrl.obtenerHistorial);
 router.get('/anomalias',             verificarToken, aulasCtrl.listarAnomalias);
+router.post('/acceso-iot', aulasCtrl.accesoIot);
+router.post('/:id/sesion', verificarToken, aulasCtrl.activarSesion);
+
 router.get('/:id',                   verificarToken, aulasCtrl.obtenerAula);
 router.post('/',                     verificarToken, soloAdmin, aulasCtrl.crearAula);
 router.put('/:id',                   verificarToken, soloAdmin, aulasCtrl.actualizarAula);

@@ -13,6 +13,8 @@ router.post('/login',    ctrl.login);
 router.get('/',                      verificarToken, soloAdmin, ctrl.listar);
 router.get('/roles',                 verificarToken, ctrl.listarRoles);
 router.get('/profesores',            verificarToken, ctrl.listarProfesores);
+router.get('/:id/qr',                verificarToken, ctrl.generarQRProfesor);
+
 router.get('/:id',                   verificarToken, ctrl.obtener);
 router.put('/:id',                   verificarToken, soloAdmin, ctrl.actualizar);
 router.delete('/:id',                verificarToken, soloAdmin, ctrl.eliminar);

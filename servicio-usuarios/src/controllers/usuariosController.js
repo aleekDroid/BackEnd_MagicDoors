@@ -219,3 +219,55 @@ exports.listarProfesores = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+/**
+ * GET /usuarios/:id/qr
+ * Genera un JWT de 24h con el id del profesor y un timestamp.
+ * El frontend usa este string para renderizar el QR.
+ */
+exports.generarQRProfesor = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Verificar que el usuario existe y es docente (rol_id = 2)
+        const result = await pool.query(
+            `SELECT id, nombre, email, rol_id FROM usuarios WHERE id = $1 AND activo = true`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+
+        const usuario = result.rows[0];
+
+        // Solo docentes tienen QR de acceso
+        if (usuario.rol_id !== 2) {
+            return res.status(403).json({ error: 'Solo los docentes tienen QR de acceso' });
+        }
+
+        // Token con 24h de vida — el servicio IoT lo decodificará al escanear
+        const qrToken = jwt.sign(
+            {
+                profesor_id: usuario.id,
+                nombre:      usuario.nombre,
+                timestamp:   new Date().toISOString(),
+                tipo:        'acceso_aula',
+            },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            qr_token:       qrToken,
+            profesor_nombre: usuario.nombre,
+            generado_en:    new Date().toISOString(),
+            expira_en:      new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+    } catch (error) {
+        console.error('❌ generarQRProfesor error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
