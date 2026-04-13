@@ -1,3 +1,4 @@
+// src/server.js
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -5,16 +6,14 @@ const gatewayRoutes = require('./routes/gatewayRoutes');
 
 const app = express();
 
-// ✅ Estos van ANTES del proxy (no consumen el body)
+// Estos van ANTES del proxy (no consumen el body)
 app.use(morgan('dev'));
 app.use(cors());
 
-// ❌ NUNCA pongas express.json() antes del proxy — mata los POST proxeados
-// El proxy reenvía el body crudo; los servicios upstream lo parsean
 
 app.use('/api', gatewayRoutes);
 
-// ✅ express.json() solo para rutas propias del gateway (después del proxy)
+// express.json() solo para rutas propias del gateway (después del proxy)
 app.use(express.json());
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
