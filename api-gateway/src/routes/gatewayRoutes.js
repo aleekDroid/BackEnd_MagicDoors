@@ -29,11 +29,14 @@ const proxyConfig = (target, endpoint) => ({
     logger: console,
 });
 
+const URL_USUARIOS = process.env.URL_USUARIOS || 'http://localhost:3001';
+const URL_AULAS    = process.env.URL_AULAS    || 'http://localhost:3002';
+
 // Servicios activos
-router.use('/usuarios', createProxyMiddleware(proxyConfig('http://localhost:3001', 'usuarios')));
-router.use('/aulas',    createProxyMiddleware(proxyConfig('http://localhost:3002', 'aulas')));
-router.use('/materias', createProxyMiddleware(proxyConfig('http://localhost:3002', 'materias')));
-router.use('/grupos',   createProxyMiddleware(proxyConfig('http://localhost:3002', 'grupos')));
+router.use('/usuarios', createProxyMiddleware(proxyConfig(URL_USUARIOS, 'usuarios')));
+router.use('/aulas',    createProxyMiddleware(proxyConfig(URL_AULAS, 'aulas')));
+router.use('/materias', createProxyMiddleware(proxyConfig(URL_AULAS, 'materias')));
+router.use('/grupos',   createProxyMiddleware(proxyConfig(URL_AULAS, 'grupos')));
 
 // Servicios futuros — comentados porque aún no están corriendo
 // router.use('/accesos', createProxyMiddleware(proxyConfig('http://localhost:3003')));
