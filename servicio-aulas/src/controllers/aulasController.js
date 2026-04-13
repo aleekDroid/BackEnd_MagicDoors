@@ -258,6 +258,38 @@ exports.obtenerQRActivo = async (req, res) => {
     }
 };
 
+exports.verificarQRDinamico = async (req, res) => {
+    const { codigo_qr } = req.body;
+    if (!codigo_qr) return res.status(400).json({ error: 'codigo_qr es requerido' });
+
+    try {
+        const result = await pool.query(
+            `SELECT d.*, a.nombre as aula_nombre 
+             FROM qr_dinamicos d
+             JOIN aulas a ON a.id = d.aula_id
+             WHERE d.codigo = $1 AND d.activo = true AND d.expiracion > NOW()`,
+            [codigo_qr]
+        );
+
+        if (result.rows.length === 0) {
+            return res.json({ abrir: false, motivo: 'QR_INVALIDO_O_EXPIRADO' });
+        }
+
+        const qrDataDB = result.rows[0];
+
+        return res.json({
+            abrir: true,
+            motivo: 'QR_VALIDO',
+            aula_id: qrDataDB.aula_id,
+            aula_nombre: qrDataDB.aula_nombre
+        });
+
+    } catch (error) {
+        console.error('❌ verificarQRDinamico error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto';
 
@@ -923,24 +955,34 @@ async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaE
 // Función auxiliar para mandar la petición HTTP al ESP32
 async function enviarOrdenAlESP32(aulaNombre, accion) {
     // Definimos la IP del ESP32. Puede venir por variable de entorno o usar una por defecto.
-    const esp32IP = process.env.ESP32_IP || '192.168.0.55'; // <--- Cambiada aquí a la 55
-    // Aseguramos formato 'A101' aunque en base de datos esté como 'A-101'
+    const esp32IP = process.env.ESP32_IP || '192.168.0.55'; // <--- IP
     const nombreLimpio = String(aulaNombre).replace('-', '');
+    const url = `http://${esp32IP}/${nombreLimpio}/${accion}`;
+
+    console.log(`📡 [ESP32] Intentando contactar: ${url}`);
+
+    // Hacemos que la petición no se quede colgada si el ESP está apagado
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 segundos de timeout
 
     try {
-        // Node 18+ incluye fetch nativo
-        const url = `http://${esp32IP}/${nombreLimpio}/${accion}`;
-        const respuesta = await fetch(url);
+        const respuesta = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
 
         if (respuesta.ok) {
-            console.log(`✅ Orden enviada al ESP32 con éxito: ${nombreLimpio} -> ${accion}`);
+            console.log(`✅ [ESP32] ¡Éxito! Orden ejecutada: ${nombreLimpio} -> ${accion}`);
             return true;
         } else {
-            console.error(`❌ El ESP32 respondió con status Http: ${respuesta.status}`);
+            console.error(`❌ [ESP32] Respondió con HTTP Status: ${respuesta.status}`);
             return false;
         }
     } catch (error) {
-        console.error(`❌ Error de red al contactar al ESP32 (${esp32IP}):`, error.message);
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.error(`❌ [ESP32] Timeout: El ESP32 no respondió en la IP ${esp32IP} (probablemente apagado o desconectado).`);
+        } else {
+            console.error(`❌ [ESP32] Error de red:`, error.message);
+        }
         return false;
     }
 }

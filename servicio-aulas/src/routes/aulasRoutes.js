@@ -24,6 +24,9 @@ router.post('/:id/generar-qr-aula',  verificarToken, aulasCtrl.generarQRAula);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
 router.post('/:id/validar-acceso',   verificarToken, aulasCtrl.validarAccesoQR); 
 
+// Ruta utilizada por el ESP32 (Hardware Scanner)
+router.post('/verificar-qr-dinamico', aulasCtrl.verificarQRDinamico);
+
 // Nueva ruta para mandar orden directa al ESP32 (abrir/cerrar)
 router.post('/:id/control-puerta',   verificarToken, aulasCtrl.controlPuertaESP32);
 
