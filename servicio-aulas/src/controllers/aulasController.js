@@ -972,8 +972,13 @@ exports.listarAnomalias = async (req, res) => {
         let anomalias = result.rows;
 
         // ── MICROSERVICIOS: Obtenemos los nombres del puerto 3001 ──
+        // ── MICROSERVICIOS FUSIONADOS: Autollamada dinámica ──
         try {
-            const response = await fetch('http://localhost:3001/usuarios', {
+            // Construimos la URL base dinámicamente (funciona en local y en Railway)
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            
+            // Llamamos a nuestra propia ruta /api/usuarios
+            const response = await fetch(`${baseUrl}/api/usuarios`, {
                 headers: { 'Authorization': req.headers['authorization'] }
             });
 
@@ -986,9 +991,11 @@ exports.listarAnomalias = async (req, res) => {
                         usuario_nombre: user ? user.nombre : `Usuario ID: ${a.usuario_id}`
                     };
                 });
+            } else {
+                console.warn(`⚠️ Fetch a usuarios devolvió status: ${response.status}`);
             }
         } catch (err) {
-            console.warn('⚠️ No se pudo conectar al ms-usuarios para traer nombres.');
+            console.warn('⚠️ No se pudo conectar a la ruta de usuarios para traer nombres:', err.message);
         }
 
         res.json(anomalias);
