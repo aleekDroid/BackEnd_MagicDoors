@@ -912,6 +912,58 @@ exports.cierreAutomatico = async () => {
     }
 };
 
+/**
+ * GET /aulas/sesiones/todas
+ * Devuelve el historial completo de sesiones (activas e inactivas)
+ * con el nombre real del aula via JOIN.
+ */
+exports.listarTodasSesiones = async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                s.id,
+                a.nombre          AS aula_nombre,
+                a.id              AS aula_id,
+                s.profesor_id,
+                s.profesor_nombre,
+                s.materia_id,
+                s.materia_nombre,
+                s.materia_codigo,
+                s.grupo_id,
+                s.grupo_nombre,
+                s.hora_inicio,
+                s.hora_fin,
+                s.dias_semana,
+                s.activa
+            FROM sesiones_aula s
+            JOIN aulas a ON a.id = s.aula_id
+            ORDER BY s.activa DESC, a.nombre ASC, s.hora_inicio ASC
+        `);
+ 
+        const sesiones = result.rows.map(row => ({
+            id:              row.id,
+            aulaId:          String(row.aula_id),
+            aulaNombre:      row.aula_nombre,
+            profesorId:      String(row.profesor_id),
+            profesorNombre:  row.profesor_nombre,
+            materiaId:       String(row.materia_id),
+            materiaNombre:   row.materia_nombre,
+            materiaCodigo:   row.materia_codigo,
+            grupoId:         String(row.grupo_id),
+            grupoNombre:     row.grupo_nombre,
+            horaInicio:      row.hora_inicio ? row.hora_inicio.substring(0, 5) : '',
+            horaFin:         row.hora_fin    ? row.hora_fin.substring(0, 5)    : '',
+            diasSemana:      row.dias_semana ?? '',   // string CSV "1,3,5"
+            activa:          row.activa,
+        }));
+ 
+        res.json(sesiones);
+    } catch (error) {
+        console.error('❌ listarTodasSesiones error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 exports.listarAnomalias = async (req, res) => {
     try {
         const result = await pool.query(

@@ -10,9 +10,11 @@ const { verificarToken, soloAdmin } = require('../middleware/authMiddleware');
 // ── Aulas ─────────────────────────────────────────────────────────────────────
 router.get('/',                      verificarToken, aulasCtrl.listarAulas);
 router.get('/historial',             verificarToken, soloAdmin, aulasCtrl.obtenerHistorial);
+router.get('/sesiones/todas',   verificarToken, aulasCtrl.listarTodasSesiones);
 router.get('/anomalias',             verificarToken, aulasCtrl.listarAnomalias);
-router.post('/acceso-iot', aulasCtrl.accesoIot);
-router.post('/:id/sesion', verificarToken, aulasCtrl.activarSesion);
+router.post('/acceso-iot',           aulasCtrl.accesoIot);
+router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
+router.get('/sesiones/todas',        verificarToken, aulasCtrl.listarTodasSesiones);
 
 router.get('/:id',                   verificarToken, aulasCtrl.obtenerAula);
 router.post('/',                     verificarToken, soloAdmin, aulasCtrl.crearAula);
