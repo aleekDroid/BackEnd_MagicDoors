@@ -874,7 +874,7 @@ exports.cierreAutomatico = async () => {
         const result = await client.query(`
             UPDATE sesiones_aula
             SET activa = false
-            WHERE activa = true AND hora_fin < CURRENT_TIME
+            WHERE activa = true AND hora_fin < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Mexico_City')::time
             RETURNING id, aula_id, profesor_id
         `);
 
