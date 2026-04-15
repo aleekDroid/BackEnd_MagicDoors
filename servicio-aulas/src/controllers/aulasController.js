@@ -2,14 +2,23 @@
 const pool = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 
+// Maps DB aula + optional sesion → frontend Classroom shape
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 // Maps DB aula + optional sesion → frontend Classroom shape
 function mapAula(row, sesion) {
-    // Determine row/col from nombre (A-101 → top row, col 1; B-104 → bottom row, col 4)
-    const match = row.nombre.match(/^([AB])-\d(\d\d)$/);
-    const rowLetter = match ? match[1] : 'A';
-    const col = match ? parseInt(match[2]) : 1;
+    // Obtenemos la letra de la fila (A o B)
+    const match = row.nombre.match(/^([a-zA-Z]+)-(\d+)$/);
+    const rowLetter = match ? match[1].toUpperCase() : 'A';
+
+    const posicionesFisicas = {
+        'A-018': 1, 'B-011': 1,  // Columna Izquierda
+        'A-017': 2, 'B-012': 2,  // Columna Centro-Izquierda
+        'A-016': 3, 'B-013': 3,  // Columna Centro-Derecha
+        'A-015': 4, 'B-014': 4   // Columna Derecha
+    };
+
+    const col = posicionesFisicas[row.nombre] || 1;
 
     const statusMap = { disponible: 'inactive', ocupada: 'active', mantenimiento: 'maintenance' };
     const status = statusMap[row.estado] || 'inactive';
@@ -20,7 +29,7 @@ function mapAula(row, sesion) {
         label: `Aula ${row.nombre}`,
         status,
         row: rowLetter === 'A' ? 'top' : 'bottom',
-        col,
+        col, 
         capacity: row.capacidad || 30,
     };
 
@@ -54,10 +63,12 @@ exports.listarAulas = async (req, res) => {
                    s.activa
             FROM aulas a
             LEFT JOIN sesiones_aula s ON s.aula_id = a.id AND s.activa = true
-            ORDER BY a.nombre ASC
         `);
 
-        const classrooms = result.rows.map(row => mapAula(row, row.activa ? row : null));
+        let classrooms = result.rows.map(row => mapAula(row, row.activa ? row : null));
+
+        classrooms.sort((a, b) => a.col - b.col);
+
         res.json(classrooms);
     } catch (error) {
         res.status(500).json({ error: error.message });
