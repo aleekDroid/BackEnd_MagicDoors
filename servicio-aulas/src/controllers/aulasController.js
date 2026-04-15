@@ -1035,10 +1035,13 @@ async function enviarOrdenAlESP32(aulaNombre, accion) {
     
     // Mapeo automático de Aulas a Pines Virtuales.
     // A101 -> V1, A102 -> V2, A103 -> V3
+// Mapeo actualizado a los nuevos nombres de tu BD. 
+    // Ajusta los pines V1, V2, V3 según cómo los haya conectado tu compañero físicamente:
     let pinVirtual = "";
-    if (nombreLimpio === "A101") pinVirtual = "V1";
-    if (nombreLimpio === "A102") pinVirtual = "V2";
-    if (nombreLimpio === "A103") pinVirtual = "V3";
+    if (nombreLimpio === "A015") pinVirtual = "V1";
+    if (nombreLimpio === "A016") pinVirtual = "V2";
+    if (nombreLimpio === "A017") pinVirtual = "V3";
+    if (nombreLimpio === "A018") pinVirtual = "V4"; // Agrega más si tienes más cerraduras físicas
 
     if (pinVirtual === "") {
         console.error(`❌ [Blynk] Aula desconocida (${nombreLimpio}), imposible mapear a un PIN Virtual.`);
