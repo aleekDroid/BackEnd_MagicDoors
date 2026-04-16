@@ -859,6 +859,44 @@ exports.validarAccesoQR = async (req, res) => {
     }
 };
 
+// Actualizar una sesión existente
+exports.actualizarSesion = async (req, res) => {
+    const { id } = req.params;
+    const { profesor_nombre, materia_nombre, hora_inicio, hora_fin, dias_semana } = req.body;
+    
+    try {
+        const result = await pool.query(
+            `UPDATE sesiones_aula 
+             SET profesor_nombre = $1, materia_nombre = $2, 
+                 hora_inicio = $3, hora_fin = $4, dias_semana = $5
+             WHERE id = $6 RETURNING *`,
+            [profesor_nombre, materia_nombre, hora_inicio, hora_fin, dias_semana, id]
+        );
+
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Sesión no encontrada' });
+        res.json({ mensaje: 'Sesión actualizada', sesion: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// Eliminar una sesión
+exports.eliminarSesion = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM sesiones_aula WHERE id = $1 RETURNING aula_id', [id]);
+        
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Sesión no encontrada' });
+
+        // Si la sesión estaba activa, liberamos el aula
+        await pool.query(`UPDATE aulas SET estado = 'disponible' WHERE id = $1`, [result.rows[0].aula_id]);
+        
+        res.json({ mensaje: 'Sesión eliminada correctamente' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
 // ─── HISTORIAL DE ACCESOS ─────────────────────────────────────────────────────
 exports.obtenerHistorial = async (req, res) => {
     try {

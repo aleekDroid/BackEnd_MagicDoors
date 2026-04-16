@@ -15,6 +15,8 @@ router.get('/anomalias',             verificarToken, aulasCtrl.listarAnomalias);
 router.post('/acceso-iot',           aulasCtrl.accesoIot);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
 router.get('/sesiones/todas',        verificarToken, aulasCtrl.listarTodasSesiones);
+router.put('/sesiones/:id', verificarToken, soloAdmin, aulasCtrl.actualizarSesion);
+router.delete('/sesiones/:id', verificarToken, soloAdmin, aulasCtrl.eliminarSesion);
 
 router.get('/:id',                   verificarToken, aulasCtrl.obtenerAula);
 router.post('/',                     verificarToken, soloAdmin, aulasCtrl.crearAula);
