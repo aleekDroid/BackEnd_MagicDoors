@@ -191,6 +191,7 @@ exports.actualizarEstado = async (req, res) => {
 };
 
 // ── QR Generation ──────────────────────────────────────────────────────────────
+// ── QR Generation ──────────────────────────────────────────────────────────────
 exports.generarQR = async (req, res) => {
     const aulaId = req.params.id;
     try {
@@ -205,11 +206,23 @@ exports.generarQR = async (req, res) => {
             timestamp: new Date().toISOString(),
         });
 
+        // 🔥 LA MAGIA QUE FALTABA: Registrar el QR en la BD
+        // 1. Invalidar códigos anteriores de esta aula por seguridad
+        await pool.query(`UPDATE qr_dinamicos SET activo = false WHERE aula_id = $1`, [aulaId]);
+
+        // 2. Guardar el nuevo código en la tabla oficial con 24 horas de vigencia
+        await pool.query(
+            `INSERT INTO qr_dinamicos (aula_id, codigo, expiracion)
+             VALUES ($1, $2, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Mexico_City') + INTERVAL '24 hours')`,
+            [aulaId, qrData]
+        );
+
         res.json({ qrData });
     } catch (error) {
+        console.error('❌ Error al generar y guardar QR:', error);
         res.status(500).json({ error: error.message });
     }
-};
+};  
 
 exports.generarQRAula = async (req, res) => {
     const aulaId = req.params.id;
