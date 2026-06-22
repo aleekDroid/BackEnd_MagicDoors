@@ -5,27 +5,14 @@ const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto';
 
-const nodemailer = require('nodemailer');
-
-// ─── CONFIGURACIÓN DE BREVO ───────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-    host: 'smtp-relay.brevo.com',
-    port: 2525,
-    secure: false,
-    auth: {
-        user: process.env.BREVO_USER, 
-        pass: process.env.BREVO_PASSWORD 
-    }
-});
-
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 exports.registrar = async (req, res) => {
     // ✅ FIX 1: Evitamos el undefined asignando null por defecto
-    const { 
-        nombre = null, email = null, password = null, 
-        rol_id = null, telefono = null, departamento = null 
-    } = req.body ?? {};    
-    
+    const {
+        nombre = null, email = null, password = null,
+        rol_id = null, telefono = null, departamento = null
+    } = req.body ?? {};
+
     try {
         const hash = await bcrypt.hash(password, 10);
         const result = await pool.query(
@@ -83,11 +70,11 @@ exports.obtener = async (req, res) => {
 
 exports.actualizar = async (req, res) => {
     // ✅ FIX 1: Evitamos el undefined asignando null por defecto
-    const { 
-        nombre = null, email = null, rol_id = null, 
-        activo = null, telefono = null, departamento = null 
-    } = req.body ?? {};    
-    
+    const {
+        nombre = null, email = null, rol_id = null,
+        activo = null, telefono = null, departamento = null
+    } = req.body ?? {};
+
     try {
         const result = await pool.query(
             `UPDATE usuarios
@@ -149,22 +136,39 @@ exports.login = async (req, res) => {
         console.log("🔑 Usuario Brevo detectado:", process.env.BREVO_USER ? "SÍ HAY CORREO" : "VACÍO/UNDEFINED");
         console.log("🔑 Password Brevo detectado:", process.env.BREVO_PASSWORD ? "SÍ HAY PASS" : "VACÍO/UNDEFINED");
 
-try {
-            await transporter.sendMail({
-                from: '"Magic Doors" <sxrgiiovilchis@gmail.com>',
-                to: usuario.email,
-                subject: 'Tu código de acceso a Magic Doors 🔐',
-                html: `
-                    <h2>¡Hola ${usuario.nombre}!</h2>
-                    <p>Alguien intentó iniciar sesión en tu cuenta. Usa el siguiente código para confirmar que eres tú:</p>
-                    <h1 style="color: #27548a; letter-spacing: 5px;">${codigo2FA}</h1>
-                    <p>Este código expira en 10 minutos.</p>
-                `
+        try {
+            const brevoUrl = 'https://api.brevo.com/v3/smtp/email';
+            
+            const response = await fetch(brevoUrl, {
+                method: 'POST',
+                headers: {
+                    'accept': 'application/json',
+                    'api-key': process.env.BREVO_API_KEY,
+                    'content-type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sender: { name: "Magic Doors", email: "sxrgiiovilchis@gmail.com" },
+                    to: [{ email: usuario.email, name: usuario.nombre }],
+                    subject: 'Tu código de acceso a Magic Doors 🔐',
+                    htmlContent: `
+                        <h2>¡Hola ${usuario.nombre}!</h2>
+                        <p>Alguien intentó iniciar sesión en tu cuenta. Usa el siguiente código para confirmar que eres tú:</p>
+                        <h1 style="color: #27548a; letter-spacing: 5px;">${codigo2FA}</h1>
+                        <p>Este código expira en 10 minutos.</p>
+                    `
+                })
             });
-            console.log("¡Correo enviado a Brevo con éxito!");
-        } catch (mailError) {
-            console.error("❌ ERROR CRÍTICO DE NODEMAILER:", mailError.message);
-            console.log(`⚠️ MODO RESCATE: Entra con el código: ${codigo2FA}`);
+
+            if (response.ok) {
+                console.log(`[2FA] Correo enviado a ${usuario.email} vía API REST`);
+            } else {
+                const errorData = await response.json();
+                console.error("[2FA] Brevo API rechazó el envío:", errorData);
+                console.log(`MODO RESCATE: Entra con el código: ${codigo2FA}`);
+            }
+        } catch (apiError) {
+            console.error("ERROR CRÍTICO DE FETCH:", apiError.message);
+            console.log(`MODO RESCATE: Entra con el código: ${codigo2FA}`);
         }
 
         res.json({ 
@@ -323,19 +327,19 @@ exports.generarQRProfesor = async (req, res) => {
         const qrToken = jwt.sign(
             {
                 profesor_id: usuario.id,
-                nombre:      usuario.nombre,
-                timestamp:   new Date().toISOString(),
-                tipo:        'acceso_aula',
+                nombre: usuario.nombre,
+                timestamp: new Date().toISOString(),
+                tipo: 'acceso_aula',
             },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
 
         res.json({
-            qr_token:       qrToken,
+            qr_token: qrToken,
             profesor_nombre: usuario.nombre,
-            generado_en:    new Date().toISOString(),
-            expira_en:      new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            generado_en: new Date().toISOString(),
+            expira_en: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         });
 
     } catch (error) {
