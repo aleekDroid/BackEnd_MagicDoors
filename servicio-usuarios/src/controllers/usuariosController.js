@@ -11,8 +11,8 @@ const nodemailer = require('nodemailer');
 const transporter = nodemailer.createTransport({
     host: 'smtp-relay.brevo.com',
     port: 587,
+    secure: false,
     auth: {
-        // Estas variables las pondremos en Railway más tarde
         user: process.env.BREVO_USER, 
         pass: process.env.BREVO_PASSWORD 
     }
@@ -145,17 +145,30 @@ exports.login = async (req, res) => {
             [codigo2FA, usuario.id]
         );
 
-        await transporter.sendMail({
-            from: '"Magic Doors" <sxrgiiovilchis@gmail.com>',
-            to: usuario.email,
-            subject: 'Tu código de acceso a Magic Doors ',
-            html: `
-                <h2>¡Hola ${usuario.nombre}!</h2>
-                <p>Alguien intentó iniciar sesión en tu cuenta. Usa el siguiente código para confirmar que eres tú:</p>
-                <h1 style="color: #27548a; letter-spacing: 5px;">${codigo2FA}</h1>
-                <p>Este código expira en 10 minutos.</p>
-            `
-        });
+        console.log("🔍 Intentando enviar correo a:", usuario.email);
+        console.log("🔑 Usuario Brevo detectado:", process.env.BREVO_USER ? "SÍ HAY CORREO" : "VACÍO/UNDEFINED");
+        console.log("🔑 Password Brevo detectado:", process.env.BREVO_PASSWORD ? "SÍ HAY PASS" : "VACÍO/UNDEFINED");
+
+        try {
+            await transporter.sendMail({
+                from: '"Magic Doors" <sxrgiiovilchis@gmail.com>',
+                to: usuario.email,
+                subject: 'Tu código de acceso a Magic Doors 🔐',
+                html: `
+                    <h2>¡Hola ${usuario.nombre}!</h2>
+                    <p>Alguien intentó iniciar sesión en tu cuenta. Usa el siguiente código para confirmar que eres tú:</p>
+                    <h1 style="color: #27548a; letter-spacing: 5px;">${codigo2FA}</h1>
+                    <p>Este código expira en 10 minutos.</p>
+                `
+            });
+            console.log("¡Correo enviado a Brevo con éxito!");
+        } catch (mailError) {
+            console.error("ERROR CRÍTICO DE NODEMAILER:", mailError);
+            return res.status(500).json({ 
+                error: 'Fallo al enviar el correo de 2FA', 
+                detalle: mailError.message 
+            });
+        }
 
         res.json({ 
             requires2FA: true, 
