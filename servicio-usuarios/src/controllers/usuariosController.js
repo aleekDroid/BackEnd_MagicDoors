@@ -5,6 +5,18 @@ const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto';
 
+const nodemailer = require('nodemailer');
+
+// ─── CONFIGURACIÓN DE BREVO ───────────────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+    host: 'smtp-relay.brevo.com',
+    port: 587,
+    auth: {
+        // Estas variables las pondremos en Railway más tarde
+        user: process.env.BREVO_USER, 
+        pass: process.env.BREVO_PASSWORD 
+    }
+});
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 exports.registrar = async (req, res) => {
@@ -124,20 +136,69 @@ exports.login = async (req, res) => {
             return res.status(401).json({ mensaje: 'Contraseña incorrecta' });
         }
 
+        // 1. Generar código de 6 dígitos aleatorio
+        const codigo2FA = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // 2. Guardar el código en la base de datos (expira en 10 minutos)
+        await pool.query(
+            `UPDATE usuarios SET codigo_2fa = $1, expiracion_2fa = NOW() + INTERVAL '10 minutes' WHERE id = $2`,
+            [codigo2FA, usuario.id]
+        );
+
+        await transporter.sendMail({
+            from: '"Magic Doors" <sxrgiiovilchis@gmail.com>',
+            to: usuario.email,
+            subject: 'Tu código de acceso a Magic Doors ',
+            html: `
+                <h2>¡Hola ${usuario.nombre}!</h2>
+                <p>Alguien intentó iniciar sesión en tu cuenta. Usa el siguiente código para confirmar que eres tú:</p>
+                <h1 style="color: #27548a; letter-spacing: 5px;">${codigo2FA}</h1>
+                <p>Este código expira en 10 minutos.</p>
+            `
+        });
+
+        res.json({ 
+            requires2FA: true, 
+            email: usuario.email, 
+            mensaje: 'Código enviado a tu correo electrónico' 
+        });
+
+    } catch (error) {
+        console.error("Error en login:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// ─── CÓDIGO 2FA ──────────────────────────────────────
+exports.verificar2FA = async (req, res) => {
+    const { email, codigo } = req.body;
+
+    try {
+        const result = await pool.query(
+            `SELECT u.*, r.nombre AS rol_nombre
+             FROM usuarios u
+             LEFT JOIN roles r ON u.rol_id = r.id
+             WHERE u.email = $1 AND u.codigo_2fa = $2 AND u.expiracion_2fa > NOW() AND u.activo = true`,
+            [email, codigo]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(401).json({ mensaje: 'Código incorrecto o expirado' });
+        }
+
+        const usuario = result.rows[0];
+
+        // Limpia el código para que no se pueda reusar.
+        await pool.query(`UPDATE usuarios SET codigo_2fa = NULL, expiracion_2fa = NULL WHERE id = $1`, [usuario.id]);
+
         const token = jwt.sign(
             { id: usuario.id, rol_id: usuario.rol_id },
             JWT_SECRET,
             { expiresIn: '8h' }
         );
 
-        // Map rol_id → 'admin' | 'user' for the Angular frontend
         const role = usuario.rol_id === 1 ? 'admin' : 'user';
-        const initials = usuario.nombre
-            .split(' ')
-            .slice(0, 2)
-            .map(n => n[0])
-            .join('')
-            .toUpperCase();
+        const initials = usuario.nombre.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
 
         res.json({
             token,
@@ -149,7 +210,9 @@ exports.login = async (req, res) => {
                 avatarInitials: initials
             }
         });
+
     } catch (error) {
+        console.error("Error al verificar 2FA:", error);
         res.status(500).json({ error: error.message });
     }
 };

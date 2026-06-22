@@ -8,9 +8,7 @@ const router = express.Router();
 const proxyConfig = (target, endpoint) => ({
     target,
     changeOrigin: true,
-    // ✅ Reconstruye la path: /login → /usuarios/login (Express quitó /usuarios)
     pathRewrite: { '^': `/${endpoint}` },
-    // ✅ CRÍTICO: repara el body para POST requests (fix de hpm v2+)
     on: {
         proxyReq: fixRequestBody,
         error: (err, req, res) => {

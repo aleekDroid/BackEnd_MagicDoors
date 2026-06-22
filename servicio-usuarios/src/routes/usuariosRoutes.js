@@ -8,6 +8,7 @@ const { verificarToken, soloAdmin } = require('../middleware/authMiddleware');
 // ── Auth (public) ──────────────────────────────────────────────────────────────
 router.post('/registro', ctrl.registrar);
 router.post('/login',    ctrl.login);
+router.post('/verificar-2fa', ctrl.verificar2FA);
 
 // ── Usuarios CRUD (admin only) ─────────────────────────────────────────────────
 router.get('/',                      verificarToken, soloAdmin, ctrl.listar);
