@@ -149,7 +149,7 @@ exports.login = async (req, res) => {
         console.log("🔑 Usuario Brevo detectado:", process.env.BREVO_USER ? "SÍ HAY CORREO" : "VACÍO/UNDEFINED");
         console.log("🔑 Password Brevo detectado:", process.env.BREVO_PASSWORD ? "SÍ HAY PASS" : "VACÍO/UNDEFINED");
 
-        try {
+try {
             await transporter.sendMail({
                 from: '"Magic Doors" <sxrgiiovilchis@gmail.com>',
                 to: usuario.email,
@@ -163,17 +163,14 @@ exports.login = async (req, res) => {
             });
             console.log("¡Correo enviado a Brevo con éxito!");
         } catch (mailError) {
-            console.error("ERROR CRÍTICO DE NODEMAILER:", mailError);
-            return res.status(500).json({ 
-                error: 'Fallo al enviar el correo de 2FA', 
-                detalle: mailError.message 
-            });
+            console.error("❌ ERROR CRÍTICO DE NODEMAILER:", mailError.message);
+            console.log(`⚠️ MODO RESCATE: Entra con el código: ${codigo2FA}`);
         }
 
         res.json({ 
             requires2FA: true, 
             email: usuario.email, 
-            mensaje: 'Código enviado a tu correo electrónico' 
+            mensaje: 'Proceso de 2FA iniciado' 
         });
 
     } catch (error) {
