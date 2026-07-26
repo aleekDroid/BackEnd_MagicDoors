@@ -13,6 +13,8 @@ router.get('/historial',             verificarToken, soloAdmin, aulasCtrl.obtene
 router.get('/sesiones/todas',   verificarToken, aulasCtrl.listarTodasSesiones);
 router.get('/anomalias',             verificarToken, aulasCtrl.listarAnomalias);
 router.post('/acceso-iot',           aulasCtrl.accesoIot);
+// Polling local del Maestro. Debe declararse antes de GET /:id.
+router.get('/orden-pendiente',       aulasCtrl.obtenerOrdenPendienteESP32);
 router.post('/:id/sesion',           verificarToken, aulasCtrl.activarSesion);
 router.get('/sesiones/todas',        verificarToken, aulasCtrl.listarTodasSesiones);
 router.put('/sesiones/:id', verificarToken, soloAdmin, aulasCtrl.actualizarSesion);

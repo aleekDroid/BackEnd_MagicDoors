@@ -1071,67 +1071,63 @@ async function _registrarAcceso(pool, { aulaId, usuarioId, accion, motivo, aulaE
     }
 }
 
-// ─── INTEGRACIÓN CON ESP32 (HARDWARE) ─────────────────────────────────────────
+// ─── INTEGRACIÓN LOCAL CON ESP32 (HARDWARE) ──────────────────────────────────
+// El Maestro consulta la cola mediante HTTP. Las órdenes caducan para impedir
+// que una puerta se abra tarde si el hardware estuvo desconectado.
+const ordenesPendientesESP32 = [];
+const AULAS_FISICAS = new Set(['A-015', 'A-016', 'A-017']);
+const VIGENCIA_ORDEN_MS = 15_000;
 
-// Función auxiliar para mandar la petición HTTP mediante Blynk IoT
 async function enviarOrdenAlESP32(aulaNombre, accion) {
-    const BLYNK_TOKEN = process.env.BLYNK_AUTH_TOKEN;
-    
-    if (!BLYNK_TOKEN) {
-        console.error('❌ [Blynk] ERROR GRAVE: BLYNK_AUTH_TOKEN no está definido en las variables de entorno (.env). No se puede abrir la puerta remotamente.');
+    const aula = String(aulaNombre).trim().toUpperCase();
+
+    if (!AULAS_FISICAS.has(aula)) {
+        console.error(`❌ [ESP32 local] Aula sin hardware configurado: ${aula}`);
         return false;
     }
 
-    const nombreLimpio = String(aulaNombre).replace('-', '');
-    
-    // Mapeo automático de Aulas a Pines Virtuales.
-    // A101 -> V1, A102 -> V2, A103 -> V3
-// Mapeo actualizado a los nuevos nombres de tu BD. 
-    // Ajusta los pines V1, V2, V3 según cómo los haya conectado tu compañero físicamente:
-    let pinVirtual = "";
-    if (nombreLimpio === "A015") pinVirtual = "V1";
-    if (nombreLimpio === "A016") pinVirtual = "V2";
-    if (nombreLimpio === "A017") pinVirtual = "V3";
-    if (nombreLimpio === "A018") pinVirtual = "V4"; // Agrega más si tienes más cerraduras físicas
-
-    if (pinVirtual === "") {
-        console.error(`❌ [Blynk] Aula desconocida (${nombreLimpio}), imposible mapear a un PIN Virtual.`);
+    if (accion !== 'abrir' && accion !== 'cerrar') {
+        console.error(`❌ [ESP32 local] Acción desconocida: ${accion}`);
         return false;
     }
 
-    // Blynk espera el valor 1 para encender/abrir, 0 para apagar/cerrar
-    const valor = (accion === 'abrir') ? 1 : 0;
-    
-    // API Universal de Blynk
-    const url = `https://blynk.cloud/external/api/update?token=${BLYNK_TOKEN}&${pinVirtual}=${valor}`;
+    const ahora = Date.now();
+    ordenesPendientesESP32.push({
+        id: `${ahora}-${Math.random().toString(16).slice(2)}`,
+        aula,
+        accion,
+        creada_en: ahora,
+        expira_en: ahora + VIGENCIA_ORDEN_MS,
+    });
 
-    console.log(`📡 [Blynk] Solicitando actualización de Datastream ${pinVirtual} a valor ${valor}`);
+    // Evita crecimiento ilimitado si el Maestro permanece apagado.
+    while (ordenesPendientesESP32.length > 30) ordenesPendientesESP32.shift();
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    try {
-        const respuesta = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (respuesta.ok) {
-            console.log(`✅ [Blynk] ¡Éxito! Nube notificada: ${nombreLimpio} -> ${accion}`);
-            return true;
-        } else {
-            const errorText = await respuesta.text();
-            console.error(`❌ [Blynk] Error HTTP: ${respuesta.status} - Motivo: ${errorText}`);
-            return false;
-        }
-    } catch (error) {
-        clearTimeout(timeoutId);
-        if (error.name === 'AbortError') {
-            console.error(`❌ [Blynk] Timeout: Blynk.cloud no respondió rápido.`);
-        } else {
-            console.error(`❌ [Blynk] Error de red:`, error.message);
-        }
-        return false;
-    }
+    console.log(`📥 [ESP32 local] Orden en cola: ${aula} -> ${accion}`);
+    return true;
 }
+
+/** GET /aulas/orden-pendiente — consultado por el ESP32 Maestro. */
+exports.obtenerOrdenPendienteESP32 = (req, res) => {
+    const ahora = Date.now();
+
+    while (ordenesPendientesESP32.length &&
+           ordenesPendientesESP32[0].expira_en <= ahora) {
+        const vencida = ordenesPendientesESP32.shift();
+        console.warn(`⚠️ [ESP32 local] Orden vencida descartada: ${vencida.aula} -> ${vencida.accion}`);
+    }
+
+    const orden = ordenesPendientesESP32.shift();
+    if (!orden) return res.json({ hay_orden: false });
+
+    console.log(`📤 [ESP32 local] Orden entregada: ${orden.aula} -> ${orden.accion}`);
+    return res.json({
+        hay_orden: true,
+        id: orden.id,
+        aula: orden.aula,
+        accion: orden.accion,
+    });
+};
 
 /**
  * POST /aulas/:id/control-puerta
